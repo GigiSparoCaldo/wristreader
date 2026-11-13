@@ -90,20 +90,19 @@ public class RedditView {
         }
         ui.contentBox.addView(sortRow);
 
-        final TextView loading = ui.addBody(ui.contentBox,
-                app.autoTranslateIt ? "Caricamento e traduzione..." : "Caricamento post...", 13f, "#E2E8F0");
+        final TextView loading = ui.addBody(ui.contentBox, "Caricamento post da Reddit...", 13f, "#E2E8F0");
 
         pool.execute(() -> {
             try {
                 String enc = URLEncoder.encode(subOrMulti, "UTF-8").replace("%2B", "+");
                 String api = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
-                        ? "https://www.reddit.com/r/" + enc + "/top.json?t=" + mode + "&limit=22&raw_json=1"
+                        ? "https://www.reddit.com/r/" + enc + "/top.json?t=" + mode + "&limit=20&raw_json=1"
                         : "random".equals(mode)
-                        ? "https://www.reddit.com/r/" + enc + "/top.json?t=week&limit=30&raw_json=1"
-                        : "https://www.reddit.com/r/" + enc + "/hot.json?limit=20&raw_json=1";
+                        ? "https://www.reddit.com/r/" + enc + "/top.json?t=week&limit=28&raw_json=1"
+                        : "https://www.reddit.com/r/" + enc + "/hot.json?limit=18&raw_json=1";
 
-                JSONArray children = new JSONObject(net.getCached(api, NetHelper.UA_REDDIT, force))
-                        .getJSONObject("data").getJSONArray("children");
+                String rawJson = net.getCached(api, NetHelper.UA_REDDIT, force);
+                JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
                 final List<JSONObject> posts = new ArrayList<>();
                 for (int i = 0; i < children.length(); i++) {
                     JSONObject p = children.optJSONObject(i).optJSONObject("data");
@@ -111,25 +110,34 @@ public class RedditView {
                 }
                 if ("random".equals(mode)) {
                     Collections.shuffle(posts);
-                    if (posts.size() > 18) posts.subList(18, posts.size()).clear();
+                    if (posts.size() > 16) posts.subList(16, posts.size()).clear();
                 }
-                List<String> origTitles = new ArrayList<>();
-                for (JSONObject p : posts) origTitles.add(p.optString("title", "(Senza titolo)"));
-                final List<String> titles = net.translateBatchIt(origTitles, app.autoTranslateIt);
 
                 app.runOnUiThread(() -> {
                     ui.contentBox.removeView(loading);
-                    if (posts.isEmpty()) { ui.addBody(ui.contentBox, "Nessun post trovato.", 13f, "#E2E8F0"); return; }
-                    for (int i = 0; i < posts.size(); i++) renderCard(subOrMulti, isMulti, mode, posts.get(i), titles.get(i));
+                    if (posts.isEmpty()) {
+                        ui.addBody(ui.contentBox, "Nessun post trovato.", 13f, "#E2E8F0");
+                        return;
+                    }
+                    List<String> origTitles = new ArrayList<>();
+                    List<TextView> titleViews = new ArrayList<>();
+                    for (JSONObject p : posts) {
+                        String t = p.optString("title", "(Senza titolo)");
+                        origTitles.add(t);
+                        titleViews.add(renderCard(subOrMulti, isMulti, mode, p, t));
+                    }
+                    if (app.autoTranslateIt) {
+                        net.translateTitlesAsync(origTitles, titleViews, app);
+                    }
                 });
-            } catch (Exception e) {
-                app.runOnUiThread(() -> loading.setText("Errore Reddit: " + e.getMessage() + "\nVerifica BtBridge."));
+            } catch (Throwable e) {
+                app.runOnUiThread(() -> loading.setText("Errore Reddit (" + e.getClass().getSimpleName() + "): " + e.getMessage() + "\nVerifica BtBridge."));
             }
         });
     }
 
-    private void renderCard(final String subOrMulti, final boolean isMulti, final String mode,
-                            JSONObject post, final String shownTitle) {
+    private TextView renderCard(final String subOrMulti, final boolean isMulti, final String mode,
+                                JSONObject post, final String shownTitle) {
         LinearLayout card = ui.card();
         String postSub = post.optString("subreddit", "");
         String author = post.optString("author", "?");
@@ -162,7 +170,7 @@ public class RedditView {
             final Button trBtn = ui.pill("🌐 Traduci in IT", "#172033", "#1E293B", "#0284C7", "#38BDF8");
             trBtn.setOnClickListener(v -> {
                 trBtn.setText("..."); trBtn.setEnabled(false);
-                pool.execute(() -> {
+                net.transPool.execute(() -> {
                     final String tr = net.translateIt(shownTitle);
                     app.runOnUiThread(() -> { tvTitle.setText(tr); card.removeView(trBtn); });
                 });
@@ -186,9 +194,10 @@ public class RedditView {
                     app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false), () -> app.loadSmartUrl(postUrl, false)));
         }
         ui.addPill(card, "Commenti (" + numComm + ")", "#1B2332", "#263145", "#334155", "#38BDF8", v ->
-                app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false), () -> loadComments(permalink, shownTitle, false)));
+                app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false), () -> loadComments(permalink, tvTitle.getText().toString(), false)));
 
         ui.contentBox.addView(card);
+        return tvTitle;
     }
 
     public void loadComments(final String permalink, final String fallbackTitle, final boolean force) {
@@ -196,24 +205,22 @@ public class RedditView {
         ui.addNavBar(app::onBackPressed,
                 () -> { app.cycleFont(); loadComments(permalink, fallbackTitle, false); },
                 () -> loadComments(permalink, fallbackTitle, true));
-        final TextView loading = ui.addBody(ui.contentBox,
-                app.autoTranslateIt ? "Traduzione discussione..." : "Caricamento commenti...", 13f, "#E2E8F0");
+        final TextView loading = ui.addBody(ui.contentBox, "Caricamento commenti...", 13f, "#E2E8F0");
+        final int gen = net.nextTransGen();
 
         pool.execute(() -> {
             try {
                 String clean = permalink.split("\\?")[0].replaceAll("/$", "");
-                JSONArray arr = new JSONArray(net.getCached(clean + ".json?limit=35&depth=4&raw_json=1", NetHelper.UA_REDDIT, force));
+                JSONArray arr = new JSONArray(net.getCached(clean + ".json?limit=30&depth=4&raw_json=1", NetHelper.UA_REDDIT, force));
                 JSONObject postData = arr.getJSONObject(0).getJSONObject("data").getJSONArray("children").getJSONObject(0).getJSONObject("data");
                 JSONArray commentsArr = arr.getJSONObject(1).getJSONObject("data").getJSONArray("children");
 
-                String rawT = postData.optString("title", fallbackTitle);
-                String rawS = postData.optString("selftext", "");
-                final String finalT = app.autoTranslateIt ? net.translateIt(rawT) : rawT;
-                final String finalS = (app.autoTranslateIt && !rawS.isEmpty()) ? net.translateIt(rawS) : rawS;
+                final String rawT = postData.optString("title", fallbackTitle);
+                final String rawS = postData.optString("selftext", "");
 
                 app.runOnUiThread(() -> {
                     ui.contentBox.removeView(loading);
-                    ui.addTitle(finalT, "#F8FAFC");
+                    ui.addTitle(rawT, "#F8FAFC");
                     ui.addSub("u/" + postData.optString("author", "?") + " • ▲ " + postData.optInt("score", 0));
                     String img = extractImage(postData);
                     if (img != null && !img.isEmpty()) app.addSmartImage(ui.contentBox, img, 420);
@@ -221,17 +228,26 @@ public class RedditView {
                     if (vid != null && !vid.isEmpty()) {
                         ui.addPill(ui.contentBox, "▶ Guarda Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vid));
                     }
-                    if (!finalS.isEmpty()) ui.addBody(ui.contentBox, finalS, 13.5f, "#E2E8F0");
+                    if (!rawS.isEmpty()) {
+                        final TextView tvSelf = ui.addBody(ui.contentBox, rawS, 13.5f, "#E2E8F0");
+                        if (app.autoTranslateIt) {
+                            net.transPool.execute(() -> {
+                                if (gen != net.transGen) return;
+                                final String trS = net.translateIt(rawS);
+                                if (gen == net.transGen && !trS.equals(rawS)) app.runOnUiThread(() -> tvSelf.setText(trS));
+                            });
+                        }
+                    }
                     ui.addSection("COMMENTI");
-                    renderTree(commentsArr, 0);
+                    renderTree(commentsArr, 0, gen);
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 app.runOnUiThread(() -> loading.setText("Errore commenti: " + e.getMessage()));
             }
         });
     }
 
-    private void renderTree(JSONArray children, int depth) {
+    private void renderTree(JSONArray children, int depth, final int gen) {
         if (children == null || depth > 4) return;
         for (int i = 0; i < children.length(); i++) {
             JSONObject item = children.optJSONObject(i);
@@ -249,15 +265,16 @@ public class RedditView {
             final TextView tv = ui.addBody(box, orig, 12.5f, "#E2E8F0");
 
             if (app.autoTranslateIt) {
-                pool.execute(() -> {
+                net.transPool.execute(() -> {
+                    if (gen != net.transGen) return;
                     final String tr = net.translateIt(orig);
-                    if (!tr.equals(orig)) app.runOnUiThread(() -> tv.setText(tr));
+                    if (gen == net.transGen && !tr.equals(orig)) app.runOnUiThread(() -> tv.setText(tr));
                 });
             } else {
                 final Button trBtn = ui.pill("🌐 Traduci", "#172033", "#1E293B", "#0284C7", "#38BDF8");
                 trBtn.setOnClickListener(v -> {
                     trBtn.setText("..."); trBtn.setEnabled(false);
-                    pool.execute(() -> {
+                    net.transPool.execute(() -> {
                         final String tr = net.translateIt(orig);
                         app.runOnUiThread(() -> { tv.setText(tr); box.removeView(trBtn); });
                     });
@@ -270,7 +287,7 @@ public class RedditView {
 
             Object rep = c.opt("replies");
             if (rep instanceof JSONObject) {
-                renderTree(((JSONObject) rep).optJSONObject("data").optJSONArray("children"), depth + 1);
+                renderTree(((JSONObject) rep).optJSONObject("data").optJSONArray("children"), depth + 1, gen);
             }
         }
     }
