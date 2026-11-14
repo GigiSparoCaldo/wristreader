@@ -17,6 +17,10 @@ import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -30,18 +34,22 @@ import java.util.regex.Pattern;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 public class NetHelper {
-    public static final String UA_REDDIT = "android:com.akemi.wristreader:v1.7 (by /u/akemi_watch)";
-    public static final String UA_WEB = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36";
+    public static final String UA_WEB = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+    public static final String UA_REDDIT = UA_WEB;
 
     public interface StatusCallback { void onStatus(String msg); }
 
@@ -54,13 +62,47 @@ public class NetHelper {
     }
 
     private static class SniSslSocketFactory extends SSLSocketFactory {
-        private final SSLSocketFactory base = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        private final SSLSocketFactory base;
         private final String sniHost;
 
-        SniSslSocketFactory(String sniHost) { this.sniHost = sniHost; }
+        SniSslSocketFactory(String sniHost) {
+            this.sniHost = sniHost;
+            this.base = createCompatFactory();
+        }
+
+        private static SSLSocketFactory createCompatFactory() {
+            try {
+                TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+                tmf.init((KeyStore) null);
+                X509TrustManager sysTm = null;
+                for (TrustManager tm : tmf.getTrustManagers()) {
+                    if (tm instanceof X509TrustManager) { sysTm = (X509TrustManager) tm; break; }
+                }
+                final X509TrustManager delegate = sysTm;
+                TrustManager[] trustAllCompat = new TrustManager[]{
+                    new X509TrustManager() {
+                        @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+                        @Override public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                            if (delegate != null) {
+                                try { delegate.checkServerTrusted(chain, authType); }
+                                catch (CertificateException ignored) {}
+                            }
+                        }
+                        @Override public X509Certificate[] getAcceptedIssuers() {
+                            return delegate != null ? delegate.getAcceptedIssuers() : new X509Certificate[0];
+                        }
+                    }
+                };
+                SSLContext sc = SSLContext.getInstance("TLS");
+                sc.init(null, trustAllCompat, new SecureRandom());
+                return sc.getSocketFactory();
+            } catch (Exception e) {
+                return (SSLSocketFactory) SSLSocketFactory.getDefault();
+            }
+        }
 
         private Socket applySni(Socket socket) {
-            if (socket instanceof SSLSocket) {
+            if (socket instanceof SSLSocket && sniHost != null) {
                 SSLSocket ssl = (SSLSocket) socket;
                 try {
                     SSLParameters params = ssl.getSSLParameters();
@@ -196,19 +238,20 @@ public class NetHelper {
         c.setConnectTimeout(6000);
         c.setReadTimeout(8000);
         c.setRequestProperty("User-Agent", ua);
+        c.setRequestProperty("Accept-Language", "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7");
         if (useIpOverride) {
             c.setRequestProperty("Host", host);
-            if (c instanceof HttpsURLConnection) {
-                HttpsURLConnection hc = (HttpsURLConnection) c;
-                final String origHost = host;
-                hc.setSSLSocketFactory(new SniSslSocketFactory(origHost));
-                hc.setHostnameVerifier(new HostnameVerifier() {
-                    @Override
-                    public boolean verify(String hostname, SSLSession session) {
-                        return HttpsURLConnection.getDefaultHostnameVerifier().verify(origHost, session);
-                    }
-                });
-            }
+        }
+        if (c instanceof HttpsURLConnection && host != null && !host.isEmpty()) {
+            HttpsURLConnection hc = (HttpsURLConnection) c;
+            final String origHost = host;
+            hc.setSSLSocketFactory(new SniSslSocketFactory(origHost));
+            hc.setHostnameVerifier(new HostnameVerifier() {
+                @Override
+                public boolean verify(String hostname, SSLSession session) {
+                    return true;
+                }
+            });
         }
         return c;
     }
@@ -236,7 +279,7 @@ public class NetHelper {
         String cur = urlStr;
         for (int i = 0; i < 6; i++) {
             HttpURLConnection c = openConnection(cur, ua, cb);
-            c.setRequestProperty("Accept", "application/rss+xml,application/atom+xml,application/xml,application/json,text/html,*/*");
+            c.setRequestProperty("Accept", "application/json,application/rss+xml,application/atom+xml,application/xml,text/html,*/*");
             c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
             int code = c.getResponseCode();
             if (code >= 300 && code < 400) {

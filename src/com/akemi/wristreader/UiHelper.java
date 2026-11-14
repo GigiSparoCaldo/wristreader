@@ -191,11 +191,11 @@ public class UiHelper {
         Button b = new Button(act);
         b.setText(text);
         b.setAllCaps(false);
-        b.setTextSize(sp(11.5f));
+        b.setTextSize(sp(10.5f)); b.setSingleLine(true);
         b.setTypeface(null, Typeface.BOLD);
         b.setTextColor(Color.parseColor(textHex));
         b.setBackground(pillDrawable(normalHex, pressedHex, strokeHex, 999));
-        b.setPadding(dp(10), dp(6), dp(10), dp(6));
+        b.setPadding(dp(6), dp(6), dp(6), dp(6));
         b.setMinHeight(0);
         b.setMinimumHeight(0);
         return b;

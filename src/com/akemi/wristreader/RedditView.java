@@ -96,12 +96,13 @@ public class RedditView {
             try {
                 String enc = URLEncoder.encode(subOrMulti, "UTF-8").replace("%2B", "+");
                 String api = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
-                        ? "https://www.reddit.com/r/" + enc + "/top.json?t=" + mode + "&limit=20&raw_json=1"
+                        ? "https://old.reddit.com/r/" + enc + "/top.json?t=" + mode + "&limit=20&raw_json=1"
                         : "random".equals(mode)
-                        ? "https://www.reddit.com/r/" + enc + "/top.json?t=week&limit=28&raw_json=1"
-                        : "https://www.reddit.com/r/" + enc + "/hot.json?limit=18&raw_json=1";
+                        ? "https://old.reddit.com/r/" + enc + "/top.json?t=week&limit=28&raw_json=1"
+                        : "https://old.reddit.com/r/" + enc + "/hot.json?limit=18&raw_json=1";
 
-                String rawJson = net.getCached(api, NetHelper.UA_REDDIT, force);
+                String rawJson = net.getCached(api, NetHelper.UA_REDDIT, force,
+                        msg -> app.runOnUiThread(() -> loading.setText(msg)));
                 JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
                 final List<JSONObject> posts = new ArrayList<>();
                 for (int i = 0; i < children.length(); i++) {
@@ -131,7 +132,7 @@ public class RedditView {
                     }
                 });
             } catch (Throwable e) {
-                app.runOnUiThread(() -> loading.setText("Errore Reddit (" + e.getClass().getSimpleName() + "): " + e.getMessage() + "\nVerifica BtBridge."));
+                app.runOnUiThread(() -> loading.setText("Errore Reddit (" + e.getClass().getSimpleName() + "): " + e.getMessage()));
             }
         });
     }
@@ -143,7 +144,7 @@ public class RedditView {
         String author = post.optString("author", "?");
         int score = post.optInt("score", 0);
         int numComm = post.optInt("num_comments", 0);
-        final String permalink = "https://www.reddit.com" + post.optString("permalink", "");
+        final String permalink = "https://old.reddit.com" + post.optString("permalink", "");
         String selfText = post.optString("selftext", "");
         final String postUrl = post.optString("url", "");
 
@@ -210,7 +211,7 @@ public class RedditView {
 
         pool.execute(() -> {
             try {
-                String clean = permalink.split("\\?")[0].replaceAll("/$", "");
+                String clean = permalink.replace("://www.reddit.com", "://old.reddit.com").split("\\?")[0].replaceAll("/$", "");
                 JSONArray arr = new JSONArray(net.getCached(clean + ".json?limit=30&depth=4&raw_json=1", NetHelper.UA_REDDIT, force));
                 JSONObject postData = arr.getJSONObject(0).getJSONObject("data").getJSONArray("children").getJSONObject(0).getJSONObject("data");
                 JSONArray commentsArr = arr.getJSONObject(1).getJSONObject("data").getJSONArray("children");
