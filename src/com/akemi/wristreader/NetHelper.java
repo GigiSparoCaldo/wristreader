@@ -103,15 +103,7 @@ public class NetHelper {
 
         private Socket applySni(Socket socket) {
             if (socket instanceof SSLSocket && sniHost != null) {
-                SSLSocket ssl = (SSLSocket) socket;
-                try {
-                    SSLParameters params = ssl.getSSLParameters();
-                    params.setServerNames(Collections.singletonList(new SNIHostName(sniHost)));
-                    ssl.setSSLParameters(params);
-                } catch (Exception ignored) {}
-                try {
-                    ssl.getClass().getMethod("setHostname", String.class).invoke(ssl, sniHost);
-                } catch (Exception ignored) {}
+                return new SniSSLSocket((SSLSocket) socket, sniHost);
             }
             return socket;
         }

@@ -95,20 +95,8 @@ public class RedditView {
         pool.execute(() -> {
             try {
                 String enc = URLEncoder.encode(subOrMulti, "UTF-8").replace("%2B", "+");
-                String api = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
-                        ? "https://old.reddit.com/r/" + enc + "/top.json?t=" + mode + "&limit=20&raw_json=1"
-                        : "random".equals(mode)
-                        ? "https://old.reddit.com/r/" + enc + "/top.json?t=week&limit=28&raw_json=1"
-                        : "https://old.reddit.com/r/" + enc + "/hot.json?limit=18&raw_json=1";
+                final List<JSONObject> posts = fetchRedditPosts(enc, mode, force, loading);
 
-                String rawJson = net.getCached(api, NetHelper.UA_REDDIT, force,
-                        msg -> app.runOnUiThread(() -> loading.setText(msg)));
-                JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
-                final List<JSONObject> posts = new ArrayList<>();
-                for (int i = 0; i < children.length(); i++) {
-                    JSONObject p = children.optJSONObject(i).optJSONObject("data");
-                    if (p != null) posts.add(p);
-                }
                 if ("random".equals(mode)) {
                     Collections.shuffle(posts);
                     if (posts.size() > 16) posts.subList(16, posts.size()).clear();
@@ -137,6 +125,48 @@ public class RedditView {
         });
     }
 
+    private List<JSONObject> fetchRedditPosts(String enc, String mode, boolean force, TextView loading) throws Exception {
+        String api = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
+                ? "https://api.reddit.com/r/" + enc + "/top?t=" + mode + "&limit=20&raw_json=1"
+                : "random".equals(mode)
+                ? "https://api.reddit.com/r/" + enc + "/top?t=week&limit=28&raw_json=1"
+                : "https://api.reddit.com/r/" + enc + "/hot?limit=18&raw_json=1";
+        try {
+            String rawJson = net.getCached(api, NetHelper.UA_REDDIT, force,
+                    msg -> app.runOnUiThread(() -> loading.setText(msg))).trim();
+            if (!rawJson.startsWith("{")) throw new Exception("Risposta HTML");
+            JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
+            List<JSONObject> posts = new ArrayList<>();
+            for (int i = 0; i < children.length(); i++) {
+                JSONObject p = children.optJSONObject(i).optJSONObject("data");
+                if (p != null) posts.add(p);
+            }
+            if (!posts.isEmpty()) return posts;
+        } catch (Exception ignored) {}
+
+        String rssUrl = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
+                ? "https://www.reddit.com/r/" + enc + "/top/.rss?t=" + mode + "&limit=20"
+                : "https://www.reddit.com/r/" + enc + "/.rss?limit=20";
+        String xml = net.getCached(rssUrl, NetHelper.UA_WEB, force,
+                msg -> app.runOnUiThread(() -> loading.setText(msg)));
+        List<NetHelper.RssEntry> entries = net.parseRss(xml);
+        List<JSONObject> fallback = new ArrayList<>();
+        for (NetHelper.RssEntry it : entries) {
+            JSONObject obj = new JSONObject();
+            obj.put("title", it.title);
+            obj.put("author", "reddit");
+            obj.put("score", 0);
+            obj.put("num_comments", 0);
+            String perm = it.link.replaceFirst("^https?://[^/]+", "");
+            obj.put("permalink", perm);
+            obj.put("selftext", it.summary);
+            obj.put("url", it.imageUrl.isEmpty() ? it.link : it.imageUrl);
+            obj.put("is_self", true);
+            fallback.add(obj);
+        }
+        return fallback;
+    }
+
     private TextView renderCard(final String subOrMulti, final boolean isMulti, final String mode,
                                 JSONObject post, final String shownTitle) {
         LinearLayout card = ui.card();
@@ -144,7 +174,7 @@ public class RedditView {
         String author = post.optString("author", "?");
         int score = post.optInt("score", 0);
         int numComm = post.optInt("num_comments", 0);
-        final String permalink = "https://old.reddit.com" + post.optString("permalink", "");
+        final String permalink = "https://api.reddit.com" + post.optString("permalink", "");
         String selfText = post.optString("selftext", "");
         final String postUrl = post.optString("url", "");
 
@@ -211,8 +241,11 @@ public class RedditView {
 
         pool.execute(() -> {
             try {
-                String clean = permalink.replace("://www.reddit.com", "://old.reddit.com").split("\\?")[0].replaceAll("/$", "");
-                JSONArray arr = new JSONArray(net.getCached(clean + ".json?limit=30&depth=4&raw_json=1", NetHelper.UA_REDDIT, force));
+                String clean = permalink.replace("://www.reddit.com", "://api.reddit.com")
+                        .replace("://old.reddit.com", "://api.reddit.com").split("\\?")[0].replaceAll("/$", "");
+                String raw = net.getCached(clean + "?limit=30&depth=4&raw_json=1", NetHelper.UA_REDDIT, force).trim();
+                if (!raw.startsWith("[")) throw new Exception("Commenti non disponibili in JSON");
+                JSONArray arr = new JSONArray(raw);
                 JSONObject postData = arr.getJSONObject(0).getJSONObject("data").getJSONArray("children").getJSONObject(0).getJSONObject("data");
                 JSONArray commentsArr = arr.getJSONObject(1).getJSONObject("data").getJSONArray("children");
 
