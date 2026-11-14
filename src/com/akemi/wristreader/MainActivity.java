@@ -243,15 +243,37 @@ public class MainActivity extends Activity {
         final TextView loading = ui.addBody(ui.contentBox, "Sblocco link articolo...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
-                final String target = net.unwrapUrl(rawUrl);
-                String body = net.getCached(target, NetHelper.UA_WEB, force,
+                String target = net.unwrapUrl(rawUrl);
+                if (target != null && target.contains("news.google.com") && !fbTitle.isEmpty()) {
+                    String ddg = net.getCached("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(fbTitle, "UTF-8"), NetHelper.UA_WEB, false);
+                    Matcher dm = Pattern.compile("<a[^>]+class=\"result__a\"[^>]+href=\"([^\"]+)\"").matcher(ddg);
+                    while (dm.find()) {
+                        String h = Html.fromHtml(dm.group(1), Html.FROM_HTML_MODE_LEGACY).toString();
+                        if (h.contains("uddg=")) h = URLDecoder.decode(h.replaceAll(".*uddg=([^&]+).*", "$1"), "UTF-8");
+                        if (h.startsWith("http") && !h.contains("google.com")) { target = h; break; }
+                    }
+                }
+                final String finalTarget = target;
+                String body = net.getCached(finalTarget, NetHelper.UA_WEB, force,
                         msg -> runOnUiThread(() -> loading.setText(msg)));
+                if (body.contains("combinando fonti di notizie") && !fbTitle.isEmpty()) {
+                    String ddg = net.getCached("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(fbTitle, "UTF-8"), NetHelper.UA_WEB, false);
+                    Matcher dm = Pattern.compile("<a[^>]+class=\"result__a\"[^>]+href=\"([^\"]+)\"").matcher(ddg);
+                    while (dm.find()) {
+                        String h = Html.fromHtml(dm.group(1), Html.FROM_HTML_MODE_LEGACY).toString();
+                        if (h.contains("uddg=")) h = URLDecoder.decode(h.replaceAll(".*uddg=([^&]+).*", "$1"), "UTF-8");
+                        if (h.startsWith("http") && !h.contains("google.com")) {
+                            body = net.getCached(h, NetHelper.UA_WEB, force);
+                            break;
+                        }
+                    }
+                }
                 String head = body.substring(0, Math.min(body.length(), 600)).toLowerCase();
                 boolean isRss = head.contains("<rss") || head.contains("<feed") || head.contains("<rdf:rdf");
                 runOnUiThread(() -> {
                     ui.contentBox.removeView(loading);
-                    if (isRss) renderRss(target, "Feed RSS", body);
-                    else renderHtml(target, body, fbTitle, fbSummary);
+                    if (isRss) renderRss(finalTarget, "Feed RSS", body);
+                    else renderHtml(finalTarget, body, fbTitle, fbSummary);
                 });
             } catch (Throwable e) {
                 runOnUiThread(() -> {

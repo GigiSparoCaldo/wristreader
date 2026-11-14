@@ -22,7 +22,6 @@ import java.security.SecureRandom;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -31,12 +30,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.SSLSession;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
@@ -48,13 +43,13 @@ import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 public class NetHelper {
-    public static final String UA_REDDIT = "android:com.akemi.wristreader:v2.0 (by /u/akemi_watch)";
+    public static final String UA_REDDIT = "Android:com.akemi.wristreader:v2.1 (by /u/WristReaderApp)";
     public static final String UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
     public interface StatusCallback { void onStatus(String msg); }
 
     public static class RssEntry {
-        public String title = "", link = "", summary = "", pubDate = "", imageUrl = "";
+        public String title = "", link = "", summary = "", pubDate = "", imageUrl = "", author = "", rawHtml = "";
     }
 
     public static class HttpRes {
@@ -62,13 +57,10 @@ public class NetHelper {
     }
 
     private static class SniSslSocketFactory extends SSLSocketFactory {
-        private final SSLSocketFactory base;
+        private final SSLSocketFactory base = createCompatFactory();
         private final String sniHost;
 
-        SniSslSocketFactory(String sniHost) {
-            this.sniHost = sniHost;
-            this.base = createCompatFactory();
-        }
+        SniSslSocketFactory(String sniHost) { this.sniHost = sniHost; }
 
         private static SSLSocketFactory createCompatFactory() {
             try {
@@ -95,15 +87,11 @@ public class NetHelper {
                 SSLContext sc = SSLContext.getInstance("TLS");
                 sc.init(null, tmArr, new SecureRandom());
                 return sc.getSocketFactory();
-            } catch (Exception e) {
-                return (SSLSocketFactory) SSLSocketFactory.getDefault();
-            }
+            } catch (Exception e) { return (SSLSocketFactory) SSLSocketFactory.getDefault(); }
         }
 
         private Socket applySni(Socket socket) {
-            if (socket instanceof SSLSocket && sniHost != null) {
-                return new SniSSLSocket((SSLSocket) socket, sniHost);
-            }
+            if (socket instanceof SSLSocket && sniHost != null) return new SniSSLSocket((SSLSocket) socket, sniHost);
             return socket;
         }
 
@@ -113,17 +101,15 @@ public class NetHelper {
         @Override public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
             return applySni(base.createSocket(s, sniHost, port, autoClose));
         }
-        @Override public Socket createSocket(String host, int port) throws IOException {
-            return applySni(base.createSocket(sniHost, port));
-        }
-        @Override public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
-            return applySni(base.createSocket(sniHost, port, localHost, localPort));
+        @Override public Socket createSocket(String host, int port) throws IOException { return applySni(base.createSocket(sniHost, port)); }
+        @Override public Socket createSocket(String host, int port, InetAddress lh, int lp) throws IOException {
+            return applySni(base.createSocket(sniHost, port, lh, lp));
         }
         @Override public Socket createSocket(InetAddress host, int port) throws IOException {
             return applySni(base.createSocket(new Socket(host, port), sniHost, port, true));
         }
-        @Override public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
-            return applySni(base.createSocket(new Socket(address, port, localAddress, localPort), sniHost, port, true));
+        @Override public Socket createSocket(InetAddress addr, int port, InetAddress la, int lp) throws IOException {
+            return applySni(base.createSocket(new Socket(addr, port, la, lp), sniHost, port, true));
         }
     }
 
@@ -135,63 +121,46 @@ public class NetHelper {
     public volatile int transGen = 0;
 
     public int nextTransGen() { return ++transGen; }
-
-    private boolean isIpLiteral(String s) {
-        return s != null && s.matches("^\\d{1,3}(\\.\\d{1,3}){3}$");
-    }
+    private boolean isIpLiteral(String s) { return s != null && s.matches("^\\d{1,3}(\\.\\d{1,3}){3}$"); }
 
     private String replaceUrlHost(URL u, String ip) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(u.getProtocol()).append("://").append(ip);
-        if (u.getPort() != -1) sb.append(":").append(u.getPort());
         String file = u.getFile();
-        sb.append((file == null || file.isEmpty()) ? "/" : file);
-        return sb.toString();
+        return u.getProtocol() + "://" + ip + (u.getPort() != -1 ? ":" + u.getPort() : "") + ((file == null || file.isEmpty()) ? "/" : file);
     }
 
     private String queryDoh(String dohUrl) {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(dohUrl).openConnection();
-            c.setConnectTimeout(3500);
-            c.setReadTimeout(3500);
+            c.setConnectTimeout(3500); c.setReadTimeout(3500);
             c.setRequestProperty("Accept", "application/dns-json");
-            c.setRequestProperty("User-Agent", UA_WEB);
             if (c.getResponseCode() != 200) return null;
             try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[2048];
-                int n;
+                byte[] buf = new byte[2048]; int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
-                JSONObject json = new JSONObject(new String(out.toByteArray(), StandardCharsets.UTF_8));
-                JSONArray ans = json.optJSONArray("Answer");
+                JSONArray ans = new JSONObject(new String(out.toByteArray(), StandardCharsets.UTF_8)).optJSONArray("Answer");
                 if (ans != null) {
                     for (int i = 0; i < ans.length(); i++) {
                         JSONObject rec = ans.optJSONObject(i);
-                        if (rec != null && rec.optInt("type") == 1) {
-                            String data = rec.optString("data", "").trim();
-                            if (isIpLiteral(data)) return data;
+                        if (rec != null && rec.optInt("type") == 1 && isIpLiteral(rec.optString("data", "").trim())) {
+                            return rec.optString("data", "").trim();
                         }
                     }
                 }
             }
-        } catch (Exception ignored) {
-        } finally {
-            if (c != null) c.disconnect();
-        }
+        } catch (Exception ignored) {} finally { if (c != null) c.disconnect(); }
         return null;
     }
 
     private String resolveHostFast(final String host, StatusCallback cb) {
         String cached = dnsCache.get(host);
         if (cached != null) return cached;
-
         if (cb != null) cb.onStatus("Risoluzione DNS " + host + "...");
         Future<String> fut = dnsPool.submit(() -> InetAddress.getByName(host).getHostAddress());
         try {
             String ip = fut.get(2500, TimeUnit.MILLISECONDS);
             if (ip != null && !ip.isEmpty()) { dnsCache.put(host, ip); return ip; }
         } catch (Exception ignored) { fut.cancel(true); }
-
         if (cb != null) cb.onStatus("DNS alternativo (DoH)...");
         String dohIp = queryDoh("https://8.8.8.8/resolve?name=" + host + "&type=A");
         if (dohIp == null) dohIp = queryDoh("https://1.1.1.1/dns-query?name=" + host + "&type=A");
@@ -201,44 +170,31 @@ public class NetHelper {
 
     private HttpURLConnection openConnection(String urlStr, String ua, StatusCallback cb) throws Exception {
         URL u = new URL(urlStr);
-        String host = u.getHost();
-        String targetUrl = urlStr;
-        boolean useIpOverride = false;
-
+        String host = u.getHost(), targetUrl = urlStr;
+        boolean useIp = false;
         if (host != null && !host.isEmpty() && !isIpLiteral(host)) {
             String ip = resolveHostFast(host, cb);
-            if (ip != null && !ip.equals(host)) {
-                targetUrl = replaceUrlHost(u, ip);
-                useIpOverride = true;
-            }
+            if (ip != null && !ip.equals(host)) { targetUrl = replaceUrlHost(u, ip); useIp = true; }
         }
-
         if (cb != null) cb.onStatus("Connessione a " + host + "...");
         HttpURLConnection c = (HttpURLConnection) new URL(targetUrl).openConnection();
-        c.setInstanceFollowRedirects(false);
-        c.setConnectTimeout(6500);
-        c.setReadTimeout(9000);
+        c.setInstanceFollowRedirects(false); c.setConnectTimeout(6500); c.setReadTimeout(9000);
         c.setRequestProperty("User-Agent", ua);
         c.setRequestProperty("Accept-Language", "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7");
-        if (useIpOverride) c.setRequestProperty("Host", host);
+        if (useIp) c.setRequestProperty("Host", host);
         if (c instanceof HttpsURLConnection && host != null && !host.isEmpty()) {
             HttpsURLConnection hc = (HttpsURLConnection) c;
             hc.setSSLSocketFactory(new SniSslSocketFactory(host));
-            hc.setHostnameVerifier((hostname, session) -> true);
+            hc.setHostnameVerifier((h, s) -> true);
         }
         return c;
     }
 
-    public String getCached(String urlStr, String ua, boolean force) throws Exception {
-        return getCached(urlStr, ua, force, null);
-    }
+    public String getCached(String urlStr, String ua, boolean force) throws Exception { return getCached(urlStr, ua, force, null); }
 
     public String getCached(String urlStr, String ua, boolean force, StatusCallback cb) throws Exception {
         String key = ua + "|" + urlStr;
-        if (!force) {
-            String c = textCache.get(key);
-            if (c != null) return c;
-        }
+        if (!force) { String c = textCache.get(key); if (c != null) return c; }
         String res = getWithUrl(urlStr, ua, cb).body;
         textCache.put(key, res);
         return res;
@@ -250,21 +206,19 @@ public class NetHelper {
         String cur = urlStr;
         for (int i = 0; i < 6; i++) {
             HttpURLConnection c = openConnection(cur, ua, cb);
-            c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7");
+            if (cur.contains(".json")) c.setRequestProperty("Accept", "application/json");
+            else c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
             c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
             int code = c.getResponseCode();
             if (code >= 300 && code < 400) {
-                String loc = c.getHeaderField("Location");
-                c.disconnect();
+                String loc = c.getHeaderField("Location"); c.disconnect();
                 if (loc == null) break;
-                cur = resolveUrl(cur, loc);
-                continue;
+                cur = resolveUrl(cur, loc); continue;
             }
             if (code >= 400) { c.disconnect(); throw new Exception("HTTP " + code); }
             if (cb != null) cb.onStatus("Scaricamento dati...");
             try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[8192];
-                int n;
+                byte[] buf = new byte[8192]; int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
                 HttpRes rx = new HttpRes();
                 rx.body = new String(out.toByteArray(), StandardCharsets.UTF_8);
@@ -279,15 +233,12 @@ public class NetHelper {
 
     public String post(String urlStr, String formBody, String ua, int timeoutMs) throws Exception {
         HttpURLConnection c = openConnection(urlStr, ua, null);
-        c.setRequestMethod("POST");
-        c.setDoOutput(true);
-        c.setConnectTimeout(timeoutMs);
-        c.setReadTimeout(timeoutMs);
+        c.setRequestMethod("POST"); c.setDoOutput(true);
+        c.setConnectTimeout(timeoutMs); c.setReadTimeout(timeoutMs);
         c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
         try (OutputStream os = c.getOutputStream()) { os.write(formBody.getBytes(StandardCharsets.UTF_8)); }
         try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192];
-            int n;
+            byte[] buf = new byte[8192]; int n;
             while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
             return new String(out.toByteArray(), StandardCharsets.UTF_8);
         } finally { c.disconnect(); }
@@ -297,18 +248,14 @@ public class NetHelper {
         String cur = urlStr;
         for (int i = 0; i < 5; i++) {
             HttpURLConnection c = openConnection(cur, ua, null);
-            int code = c.getResponseCode();
-            if (code >= 300 && code < 400) {
-                String loc = c.getHeaderField("Location");
-                c.disconnect();
+            if (c.getResponseCode() >= 300 && c.getResponseCode() < 400) {
+                String loc = c.getHeaderField("Location"); c.disconnect();
                 if (loc == null) break;
-                cur = resolveUrl(cur, loc);
-                continue;
+                cur = resolveUrl(cur, loc); continue;
             }
-            if (code >= 400) { c.disconnect(); throw new Exception("HTTP " + code); }
+            if (c.getResponseCode() >= 400) { c.disconnect(); throw new Exception("HTTP " + c.getResponseCode()); }
             try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[8192];
-                int n;
+                byte[] buf = new byte[8192]; int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
                 return out.toByteArray();
             } finally { c.disconnect(); }
@@ -365,14 +312,12 @@ public class NetHelper {
                 final String orig = titles.get(i);
                 final TextView tv = views.get(i);
                 String c = transCache.get(orig);
-                if (c != null) {
-                    if (!c.equals(orig)) act.runOnUiThread(() -> tv.setText(c));
-                } else if (!orig.trim().isEmpty()) {
+                if (c != null) { if (!c.equals(orig)) act.runOnUiThread(() -> tv.setText(c)); }
+                else if (!orig.trim().isEmpty()) {
                     if (missing.size() > 0) joined.append("\n|||\n");
                     String clean = orig.replace("\n", " ").replace("|||", "-");
                     if (clean.length() > 220) clean = clean.substring(0, 220);
-                    joined.append(clean);
-                    missing.add(i);
+                    joined.append(clean); missing.add(i);
                 }
             }
             if (missing.isEmpty() || gen != transGen) return;
@@ -407,7 +352,7 @@ public class NetHelper {
             String b64 = decodeGNewsB64(id);
             if (b64 != null) return b64;
 
-            HttpRes resp = getWithUrl("https://news.google.com/articles/" + id + "?hl=it&gl=IT&ceid=IT:it", UA_WEB);
+            HttpRes resp = getWithUrl("https://news.google.com/rss/articles/" + id, UA_WEB);
             if (resp.finalUrl != null && !resp.finalUrl.contains("news.google.com") && !resp.finalUrl.contains("consent.google.com")) {
                 return resp.finalUrl;
             }
@@ -415,15 +360,20 @@ public class NetHelper {
             if (mAu.find()) return Html.fromHtml(mAu.group(1), Html.FROM_HTML_MODE_LEGACY).toString();
             Matcher mSg = Pattern.compile("data-n-a-sg=[\"']([^\"']+)[\"']").matcher(resp.body);
             Matcher mTs = Pattern.compile("data-n-a-ts=[\"']([^\"']+)[\"']").matcher(resp.body);
-            if (mSg.find() && mTs.find()) {
-                String inner = "[\"garturlreq\",[[\"X\",\"X\",[\"X\",\"X\"],null,null,1,1,\"IT:it\",null,1,null,null,null,null,null,0,1],\"X\",\"X\",1,[1,1,1],1,1,null,0,0,null,0],\"" + id + "\"," + mTs.group(1) + ",\"" + mSg.group(1) + "\"]";
-                JSONArray r1 = new JSONArray().put("Fbv4je").put(inner).put(JSONObject.NULL).put("generic");
-                String req = new JSONArray().put(new JSONArray().put(r1)).toString();
-                String batch = post("https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je&source-path=%2Farticles%2F" + id,
-                        "f.req=" + URLEncoder.encode(req, "UTF-8"), UA_WEB, 6000);
-                Matcher mUrl = Pattern.compile("\\[\"garturlres\",\"(https?:\\\\?/\\\\?/[^\"\\\\]+(?:\\\\/[^\"\\\\]+)*)\"").matcher(batch);
-                if (mUrl.find()) return mUrl.group(1).replace("\\/", "/").replace("\\u003d", "=").replace("\\u0026", "&");
+            if (!mSg.find() || !mTs.find()) {
+                resp = getWithUrl("https://news.google.com/articles/" + id + "?hl=it&gl=IT&ceid=IT:it", UA_WEB);
+                mSg = Pattern.compile("data-n-a-sg=[\"']([^\"']+)[\"']").matcher(resp.body);
+                mTs = Pattern.compile("data-n-a-ts=[\"']([^\"']+)[\"']").matcher(resp.body);
+                if (!mSg.find() || !mTs.find()) return url;
             }
+            String inner = "[\"garturlreq\",[[\"X\",\"X\",[\"X\",\"X\"],null,null,1,1,\"IT:it\",null,1,null,null,null,null,null,0,1],\"X\",\"X\",1,[1,1,1],1,1,null,0,0,null,0],\"" + id + "\"," + mTs.group(1) + ",\"" + mSg.group(1) + "\"]";
+            JSONArray r1 = new JSONArray().put("Fbv4je").put(inner).put(JSONObject.NULL).put("generic");
+            String req = new JSONArray().put(new JSONArray().put(r1)).toString();
+            String batch = post("https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
+                    "f.req=" + URLEncoder.encode(req, "UTF-8"), UA_WEB, 6500);
+            String unescaped = batch.replace("\\\"", "\"").replace("\\/", "/").replace("\\u003d", "=").replace("\\u0026", "&");
+            Matcher mUrl = Pattern.compile("\\[\"garturlres\",\"(https?://[^\"]+)\"").matcher(unescaped);
+            if (mUrl.find()) return mUrl.group(1);
         } catch (Exception ignored) {}
         return url;
     }
@@ -457,18 +407,20 @@ public class NetHelper {
         xpp.setInput(new StringReader(xml));
         RssEntry cur = null;
         int ev = xpp.getEventType();
-        while (ev != XmlPullParser.END_DOCUMENT && list.size() < 25) {
+        while (ev != XmlPullParser.END_DOCUMENT && list.size() < 30) {
             String tag = xpp.getName() != null ? xpp.getName().toLowerCase() : "";
             if (ev == XmlPullParser.START_TAG) {
                 if ("item".equals(tag) || "entry".equals(tag)) cur = new RssEntry();
                 else if (cur != null) {
                     if ("title".equals(tag)) cur.title = stripHtml(safeText(xpp));
+                    else if ("name".equals(tag) && cur.author.isEmpty()) cur.author = safeText(xpp).replaceFirst("^/?u/", "").trim();
                     else if ("link".equals(tag)) {
                         String href = xpp.getAttributeValue(null, "href");
                         if (href != null && !href.isEmpty()) cur.link = href.trim();
                         else { String t = safeText(xpp).trim(); if (!t.isEmpty()) cur.link = t; }
                     } else if ("description".equals(tag) || "summary".equals(tag) || "content".equals(tag) || "content:encoded".equals(tag)) {
                         String raw = safeText(xpp);
+                        if (raw.length() > cur.rawHtml.length()) cur.rawHtml = raw;
                         if (cur.imageUrl.isEmpty()) {
                             Matcher m = Pattern.compile("(?i)<img[^>]+src=[\"']([^\"']+)[\"']").matcher(raw);
                             if (m.find()) cur.imageUrl = m.group(1);
