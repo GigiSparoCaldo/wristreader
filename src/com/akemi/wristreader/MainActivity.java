@@ -268,12 +268,13 @@ public class MainActivity extends Activity {
                         }
                     }
                 }
-                String head = body.substring(0, Math.min(body.length(), 600)).toLowerCase();
-                boolean isRss = head.contains("<rss") || head.contains("<feed") || head.contains("<rdf:rdf");
+                final String finalBody = body;
+                String head = finalBody.substring(0, Math.min(finalBody.length(), 600)).toLowerCase();
+                final boolean isRss = head.contains("<rss") || head.contains("<feed") || head.contains("<rdf:rdf");
                 runOnUiThread(() -> {
                     ui.contentBox.removeView(loading);
-                    if (isRss) renderRss(finalTarget, "Feed RSS", body);
-                    else renderHtml(finalTarget, body, fbTitle, fbSummary);
+                    if (isRss) renderRss(finalTarget, "Feed RSS", finalBody);
+                    else renderHtml(finalTarget, finalBody, fbTitle, fbSummary);
                 });
             } catch (Throwable e) {
                 runOnUiThread(() -> {
