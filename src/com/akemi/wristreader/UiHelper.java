@@ -151,7 +151,7 @@ public class UiHelper {
 
         mediaOverlay.addView(videoView);
         mediaOverlay.addView(closeBtn, blp);
-        videoView.setVideoURI(Uri.parse(optUrl));
+        java.util.Map<String, String> h = new java.util.HashMap<>(); h.put("User-Agent", NetHelper.UA_WEB); videoView.setVideoURI(Uri.parse(optUrl.split("\\?")[0]), h);
         videoView.requestFocus();
         videoView.start();
     }

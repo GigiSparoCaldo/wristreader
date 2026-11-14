@@ -16,6 +16,7 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.ArrayList;
@@ -231,22 +232,34 @@ public class MainActivity extends Activity {
     }
 
     public void loadSmartUrl(final String rawUrl, final boolean force) {
+        loadSmartUrl(rawUrl, force, "", "");
+    }
+
+    public void loadSmartUrl(final String rawUrl, final boolean force, final String fbTitle, final String fbSummary) {
         ui.clear();
-        ui.addNavBar(this::onBackPressed, () -> { cycleFont(); loadSmartUrl(rawUrl, false); }, () -> loadSmartUrl(rawUrl, true));
-        final TextView loading = ui.addBody(ui.contentBox, "Apertura pagina...", 13f, "#E2E8F0");
+        ui.addNavBar(this::onBackPressed,
+                () -> { cycleFont(); loadSmartUrl(rawUrl, false, fbTitle, fbSummary); },
+                () -> loadSmartUrl(rawUrl, true, fbTitle, fbSummary));
+        final TextView loading = ui.addBody(ui.contentBox, "Sblocco link articolo...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
                 final String target = net.unwrapUrl(rawUrl);
-                String body = net.getCached(target, NetHelper.UA_WEB, force);
+                String body = net.getCached(target, NetHelper.UA_WEB, force,
+                        msg -> runOnUiThread(() -> loading.setText(msg)));
                 String head = body.substring(0, Math.min(body.length(), 600)).toLowerCase();
                 boolean isRss = head.contains("<rss") || head.contains("<feed") || head.contains("<rdf:rdf");
                 runOnUiThread(() -> {
                     ui.contentBox.removeView(loading);
                     if (isRss) renderRss(target, "Feed RSS", body);
-                    else renderHtml(target, body);
+                    else renderHtml(target, body, fbTitle, fbSummary);
                 });
-            } catch (Exception e) {
-                runOnUiThread(() -> loading.setText("Errore caricamento: " + e.getMessage()));
+            } catch (Throwable e) {
+                runOnUiThread(() -> {
+                    ui.contentBox.removeView(loading);
+                    if (!fbTitle.isEmpty()) ui.addTitle(fbTitle, "#38BDF8");
+                    if (!fbSummary.isEmpty()) ui.addBody(ui.contentBox, fbSummary, 13.5f, "#E2E8F0");
+                    ui.addSub("Sito non apribile (" + e.getMessage() + ")");
+                });
             }
         });
     }
@@ -255,13 +268,21 @@ public class MainActivity extends Activity {
         ui.clear();
         ui.addNavBar(this::onBackPressed, () -> { cycleFont(); loadRss(url, title, false); }, () -> loadRss(url, title, true));
         ui.addTitle(title, "#38BDF8");
-        final TextView loading = ui.addBody(ui.contentBox, "Scaricamento notizie...", 13f, "#E2E8F0");
+        final TextView loading = ui.addBody(ui.contentBox, "Avvio richiesta RSS...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
-                String xml = net.getCached(url, NetHelper.UA_WEB, force);
-                runOnUiThread(() -> { ui.contentBox.removeView(loading); renderRss(url, title, xml); });
-            } catch (Exception e) {
-                runOnUiThread(() -> loading.setText("Errore RSS: " + e.getMessage()));
+                String xml;
+                try {
+                    xml = net.getCached(url, NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg)));
+                } catch (Exception firstErr) {
+                    String host = new URL(url).getHost().replaceFirst("^www\\.", "");
+                    String gFallback = "https://news.google.com/rss/search?q=site:" + URLEncoder.encode(host, "UTF-8") + "&hl=it&gl=IT&ceid=IT:it";
+                    xml = net.getCached(gFallback, NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg)));
+                }
+                final String finalXml = xml;
+                runOnUiThread(() -> { ui.contentBox.removeView(loading); renderRss(url, title, finalXml); });
+            } catch (Throwable e) {
+                runOnUiThread(() -> loading.setText("Errore RSS (" + e.getClass().getSimpleName() + "): " + e.getMessage()));
             }
         });
     }
@@ -275,15 +296,16 @@ public class MainActivity extends Activity {
                 if (!it.pubDate.isEmpty()) ui.addBody(card, it.pubDate, 10f, "#94A3B8");
                 TextView tvT = ui.addBody(card, it.title.isEmpty() ? "(Articolo)" : it.title, 14f, "#F8FAFC");
                 tvT.setTypeface(null, Typeface.BOLD);
-                if (!it.imageUrl.isEmpty()) addSmartImage(card, it.imageUrl, 300);
+                if (!it.imageUrl.isEmpty()) addSmartImage(card, it.imageUrl, 300, "🖼 Carica foto");
                 if (!it.summary.isEmpty()) ui.addBody(card, it.summary.length() > 180 ? it.summary.substring(0, 180) + "..." : it.summary, 12f, "#CBD5E1");
                 if (!it.link.isEmpty()) {
                     ui.addPill(card, "Leggi Articolo", "#0284C7", "#0369A1", null, "#FFFFFF", v ->
-                            navigateTo(() -> loadRss(feedUrl, feedTitle, false), () -> loadSmartUrl(it.link, false)));
+                            navigateTo(() -> loadRss(feedUrl, feedTitle, false),
+                                    () -> loadSmartUrl(it.link, false, it.title, it.summary)));
                 }
                 ui.contentBox.addView(card);
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             ui.addBody(ui.contentBox, "Errore XML: " + e.getMessage(), 13f, "#E2E8F0");
         }
     }
@@ -295,7 +317,8 @@ public class MainActivity extends Activity {
         final TextView loading = ui.addBody(ui.contentBox, "Ricerca sul web...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
-                String html = net.getCached("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8"), NetHelper.UA_WEB, force);
+                String html = net.getCached("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8"),
+                        NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg)));
                 Matcher m = Pattern.compile("<a[^>]+class=\"result__a\"[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", Pattern.DOTALL).matcher(html);
                 final List<String[]> res = new ArrayList<>();
                 while (m.find() && res.size() < 12) {
@@ -309,22 +332,36 @@ public class MainActivity extends Activity {
                     if (res.isEmpty()) { ui.addBody(ui.contentBox, "Nessun risultato.", 13f, "#E2E8F0"); return; }
                     for (final String[] r : res) {
                         ui.addPill(ui.contentBox, r[0], "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                                navigateTo(() -> loadSearch(query, false), () -> loadSmartUrl(r[1], false)));
+                                navigateTo(() -> loadSearch(query, false), () -> loadSmartUrl(r[1], false, r[0], "")));
                     }
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 runOnUiThread(() -> loading.setText("Errore ricerca: " + e.getMessage()));
             }
         });
     }
 
-    private void renderHtml(final String pageUrl, String html) {
+    private void renderHtml(final String pageUrl, String html, String fbTitle, String fbSummary) {
         String title = net.extractTag(html, "title");
+        if (title.isEmpty() || title.equalsIgnoreCase("Google News")) title = fbTitle;
+        if (!title.isEmpty()) ui.addTitle(title, "#38BDF8");
+
+        String ogImg = "";
+        Matcher mOgImg = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']").matcher(html);
+        if (mOgImg.find()) ogImg = net.resolveUrl(pageUrl, mOgImg.group(1));
+        if (ogImg != null && !ogImg.isEmpty()) addSmartImage(ui.contentBox, ogImg, 360, "🖼 Foto articolo");
+
+        String jsonBody = "";
+        Matcher mJsonBody = Pattern.compile("(?is)\"articleBody\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(html);
+        if (mJsonBody.find()) {
+            jsonBody = mJsonBody.group(1).replace("\\n", "\n").replace("\\\"", "\"").replace("\\/", "/").trim();
+        }
+
         String cleaned = html.replaceAll("(?is)<script.*?</script>", " ").replaceAll("(?is)<style.*?</style>", " ")
                 .replaceAll("(?is)<nav.*?</nav>", " ").replaceAll("(?is)<footer.*?</footer>", " ").replaceAll("(?is)<!--.*?-->", " ");
-        Matcher m = Pattern.compile("(?is)<(p|h1|h2|h3|li)\\b[^>]*>(.*?)</\\1>|<img\\b[^>]*\\bsrc=[\"']([^\"']+)[\"'][^>]*>|<(?:video|source)\\b[^>]*\\bsrc=[\"']([^\"']+\\.mp4[^\"']*)[\"'][^>]*>").matcher(cleaned);
-        if (!title.isEmpty()) ui.addTitle(title, "#38BDF8");
-        int count = 0, imgs = 0;
+        Matcher m = Pattern.compile("(?is)<(p|h1|h2|h3|li|blockquote)\\b[^>]*>(.*?)</\\1>|<img\\b[^>]*\\bsrc=[\"']([^\"']+)[\"'][^>]*>|<(?:video|source)\\b[^>]*\\bsrc=[\"']([^\"']+\\.mp4[^\"']*)[\"'][^>]*>").matcher(cleaned);
+
+        int count = 0, imgs = (ogImg != null && !ogImg.isEmpty()) ? 1 : 0;
         while (m.find() && count < 90) {
             if (m.group(1) != null) {
                 String tag = m.group(1).toLowerCase(), txt = net.stripHtml(m.group(2)).trim();
@@ -332,38 +369,38 @@ public class MainActivity extends Activity {
                     if (tag.startsWith("h")) ui.addSection(txt); else ui.addBody(ui.contentBox, txt, 13.5f, "#E2E8F0");
                     count++;
                 }
-            } else if (m.group(3) != null && imgs < 12) {
+            } else if (m.group(3) != null && imgs < 10) {
                 String src = net.resolveUrl(pageUrl, m.group(3));
-                if (src != null && !src.endsWith(".svg") && !src.contains("pixel") && !src.contains("icon")) {
-                    addSmartImage(ui.contentBox, src, 380); imgs++; count++;
+                if (src != null && !src.equals(ogImg) && !src.endsWith(".svg") && !src.contains("pixel") && !src.contains("icon")) {
+                    addSmartImage(ui.contentBox, src, 360, "🖼 Carica foto"); imgs++; count++;
                 }
             } else if (m.group(4) != null) {
                 final String vs = net.resolveUrl(pageUrl, m.group(4));
                 if (vs != null) { ui.addPill(ui.contentBox, "▶ Riproduci Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vs)); count++; }
             }
         }
-        Matcher lm = Pattern.compile("(?is)<a\\b[^>]*\\bhref=[\"']([^\"'#]+)[\"'][^>]*>(.*?)</a>").matcher(cleaned);
-        List<String[]> links = new ArrayList<>();
-        while (lm.find() && links.size() < 15) {
-            String href = net.resolveUrl(pageUrl, lm.group(1)), ltxt = net.stripHtml(lm.group(2)).trim();
-            if (href != null && href.startsWith("http") && ltxt.length() >= 24 && ltxt.length() <= 140) links.add(new String[]{ltxt, href});
+
+        if (count < 2 && !jsonBody.isEmpty()) {
+            ui.addBody(ui.contentBox, jsonBody, 13.5f, "#E2E8F0");
+            count += 3;
         }
-        if (!links.isEmpty()) {
-            ui.addSection("ARTICOLI / LINK");
-            for (final String[] lk : links) {
-                ui.addPill(ui.contentBox, lk[0], "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                        navigateTo(() -> loadSmartUrl(pageUrl, false), () -> loadSmartUrl(lk[1], false)));
-            }
+        if (count == 0) {
+            String ogDesc = "";
+            Matcher mDesc = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"'](?:og:description|description)[\"'][^>]+content=[\"']([^\"']+)[\"']").matcher(html);
+            if (mDesc.find()) ogDesc = net.stripHtml(mDesc.group(1));
+            String best = !ogDesc.isEmpty() ? ogDesc : fbSummary;
+            if (!best.isEmpty()) ui.addBody(ui.contentBox, best, 13.5f, "#E2E8F0");
+            else ui.addSub("Contenuto protetto da JavaScript/Paywall (" + pageUrl + ")");
         }
     }
 
-    public void addSmartImage(final LinearLayout container, final String imgUrl, final int maxH) {
+    public void addSmartImage(final LinearLayout container, final String imgUrl, final int maxH, final String label) {
         if (!imagesOnTap) {
             ImageView iv = new ImageView(this);
             iv.setAdjustViewBounds(true); iv.setMaxHeight(maxH); iv.setPadding(0, ui.dp(4), 0, ui.dp(6));
             container.addView(iv); loadImageAsync(imgUrl, iv); return;
         }
-        final Button btn = ui.pill("🖼 Carica foto", "#0E1726", "#16243B", "#1D4ED8", "#60A5FA");
+        final Button btn = ui.pill(label, "#0E1726", "#16243B", "#1D4ED8", "#60A5FA");
         btn.setOnClickListener(v -> {
             btn.setText("Caricamento..."); btn.setEnabled(false);
             ImageView iv = new ImageView(this);

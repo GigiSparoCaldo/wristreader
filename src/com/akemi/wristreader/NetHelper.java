@@ -48,8 +48,8 @@ import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 public class NetHelper {
-    public static final String UA_WEB = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
-    public static final String UA_REDDIT = UA_WEB;
+    public static final String UA_REDDIT = "android:com.akemi.wristreader:v2.0 (by /u/akemi_watch)";
+    public static final String UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
     public interface StatusCallback { void onStatus(String msg); }
 
@@ -79,13 +79,12 @@ public class NetHelper {
                     if (tm instanceof X509TrustManager) { sysTm = (X509TrustManager) tm; break; }
                 }
                 final X509TrustManager delegate = sysTm;
-                TrustManager[] trustAllCompat = new TrustManager[]{
+                TrustManager[] tmArr = new TrustManager[]{
                     new X509TrustManager() {
-                        @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
-                        @Override public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                        @Override public void checkClientTrusted(X509Certificate[] c, String a) {}
+                        @Override public void checkServerTrusted(X509Certificate[] c, String a) throws CertificateException {
                             if (delegate != null) {
-                                try { delegate.checkServerTrusted(chain, authType); }
-                                catch (CertificateException ignored) {}
+                                try { delegate.checkServerTrusted(c, a); } catch (CertificateException ignored) {}
                             }
                         }
                         @Override public X509Certificate[] getAcceptedIssuers() {
@@ -94,7 +93,7 @@ public class NetHelper {
                     }
                 };
                 SSLContext sc = SSLContext.getInstance("TLS");
-                sc.init(null, trustAllCompat, new SecureRandom());
+                sc.init(null, tmArr, new SecureRandom());
                 return sc.getSocketFactory();
             } catch (Exception e) {
                 return (SSLSocketFactory) SSLSocketFactory.getDefault();
@@ -190,23 +189,13 @@ public class NetHelper {
         Future<String> fut = dnsPool.submit(() -> InetAddress.getByName(host).getHostAddress());
         try {
             String ip = fut.get(2500, TimeUnit.MILLISECONDS);
-            if (ip != null && !ip.isEmpty()) {
-                dnsCache.put(host, ip);
-                return ip;
-            }
-        } catch (Exception ignored) {
-            fut.cancel(true);
-        }
+            if (ip != null && !ip.isEmpty()) { dnsCache.put(host, ip); return ip; }
+        } catch (Exception ignored) { fut.cancel(true); }
 
         if (cb != null) cb.onStatus("DNS alternativo (DoH)...");
         String dohIp = queryDoh("https://8.8.8.8/resolve?name=" + host + "&type=A");
-        if (dohIp == null) {
-            dohIp = queryDoh("https://1.1.1.1/dns-query?name=" + host + "&type=A");
-        }
-        if (dohIp != null) {
-            dnsCache.put(host, dohIp);
-            return dohIp;
-        }
+        if (dohIp == null) dohIp = queryDoh("https://1.1.1.1/dns-query?name=" + host + "&type=A");
+        if (dohIp != null) { dnsCache.put(host, dohIp); return dohIp; }
         return null;
     }
 
@@ -227,23 +216,15 @@ public class NetHelper {
         if (cb != null) cb.onStatus("Connessione a " + host + "...");
         HttpURLConnection c = (HttpURLConnection) new URL(targetUrl).openConnection();
         c.setInstanceFollowRedirects(false);
-        c.setConnectTimeout(6000);
-        c.setReadTimeout(8000);
+        c.setConnectTimeout(6500);
+        c.setReadTimeout(9000);
         c.setRequestProperty("User-Agent", ua);
         c.setRequestProperty("Accept-Language", "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7");
-        if (useIpOverride) {
-            c.setRequestProperty("Host", host);
-        }
+        if (useIpOverride) c.setRequestProperty("Host", host);
         if (c instanceof HttpsURLConnection && host != null && !host.isEmpty()) {
             HttpsURLConnection hc = (HttpsURLConnection) c;
-            final String origHost = host;
-            hc.setSSLSocketFactory(new SniSslSocketFactory(origHost));
-            hc.setHostnameVerifier(new HostnameVerifier() {
-                @Override
-                public boolean verify(String hostname, SSLSession session) {
-                    return true;
-                }
-            });
+            hc.setSSLSocketFactory(new SniSslSocketFactory(host));
+            hc.setHostnameVerifier((hostname, session) -> true);
         }
         return c;
     }
@@ -263,15 +244,13 @@ public class NetHelper {
         return res;
     }
 
-    public HttpRes getWithUrl(String urlStr, String ua) throws Exception {
-        return getWithUrl(urlStr, ua, null);
-    }
+    public HttpRes getWithUrl(String urlStr, String ua) throws Exception { return getWithUrl(urlStr, ua, null); }
 
     public HttpRes getWithUrl(String urlStr, String ua, StatusCallback cb) throws Exception {
         String cur = urlStr;
         for (int i = 0; i < 6; i++) {
             HttpURLConnection c = openConnection(cur, ua, cb);
-            c.setRequestProperty("Accept", "application/json,application/rss+xml,application/atom+xml,application/xml,text/html,*/*");
+            c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7");
             c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
             int code = c.getResponseCode();
             if (code >= 300 && code < 400) {
@@ -296,9 +275,7 @@ public class NetHelper {
         throw new Exception("Troppi redirect");
     }
 
-    public String post(String urlStr, String formBody, String ua) throws Exception {
-        return post(urlStr, formBody, ua, 6000);
-    }
+    public String post(String urlStr, String formBody, String ua) throws Exception { return post(urlStr, formBody, ua, 6500); }
 
     public String post(String urlStr, String formBody, String ua, int timeoutMs) throws Exception {
         HttpURLConnection c = openConnection(urlStr, ua, null);
@@ -353,9 +330,7 @@ public class NetHelper {
         return Html.fromHtml(noTags, Html.FROM_HTML_MODE_LEGACY).toString().replaceAll("\\s+", " ").trim();
     }
 
-    public String translateIt(String text) {
-        return translateRaw(text, 1600, 5000);
-    }
+    public String translateIt(String text) { return translateRaw(text, 1600, 5000); }
 
     private String translateRaw(String text, int maxLen, int timeoutMs) {
         if (text == null || text.trim().isEmpty()) return text;
@@ -366,10 +341,7 @@ public class NetHelper {
             String resp = post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=it&dt=t",
                     "q=" + URLEncoder.encode(trimmed, "UTF-8"), UA_WEB, timeoutMs);
             JSONArray root = new JSONArray(resp);
-            if ("it".equalsIgnoreCase(root.optString(2, ""))) {
-                transCache.put(text, text);
-                return text;
-            }
+            if ("it".equalsIgnoreCase(root.optString(2, ""))) { transCache.put(text, text); return text; }
             JSONArray segs = root.getJSONArray(0);
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < segs.length(); i++) {
@@ -413,10 +385,7 @@ public class NetHelper {
                     for (int k = 0; k < missing.size(); k++) {
                         int idx = missing.get(k);
                         String tr = parts[k].trim();
-                        if (!tr.isEmpty()) {
-                            transCache.put(titles.get(idx), tr);
-                            views.get(idx).setText(tr);
-                        }
+                        if (!tr.isEmpty()) { transCache.put(titles.get(idx), tr); views.get(idx).setText(tr); }
                     }
                 });
             }
@@ -438,7 +407,7 @@ public class NetHelper {
             String b64 = decodeGNewsB64(id);
             if (b64 != null) return b64;
 
-            HttpRes resp = getWithUrl("https://news.google.com/rss/articles/" + id, UA_WEB);
+            HttpRes resp = getWithUrl("https://news.google.com/articles/" + id + "?hl=it&gl=IT&ceid=IT:it", UA_WEB);
             if (resp.finalUrl != null && !resp.finalUrl.contains("news.google.com") && !resp.finalUrl.contains("consent.google.com")) {
                 return resp.finalUrl;
             }
@@ -450,8 +419,8 @@ public class NetHelper {
                 String inner = "[\"garturlreq\",[[\"X\",\"X\",[\"X\",\"X\"],null,null,1,1,\"IT:it\",null,1,null,null,null,null,null,0,1],\"X\",\"X\",1,[1,1,1],1,1,null,0,0,null,0],\"" + id + "\"," + mTs.group(1) + ",\"" + mSg.group(1) + "\"]";
                 JSONArray r1 = new JSONArray().put("Fbv4je").put(inner).put(JSONObject.NULL).put("generic");
                 String req = new JSONArray().put(new JSONArray().put(r1)).toString();
-                String batch = post("https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
-                        "f.req=" + URLEncoder.encode(req, "UTF-8"), UA_WEB, 5000);
+                String batch = post("https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je&source-path=%2Farticles%2F" + id,
+                        "f.req=" + URLEncoder.encode(req, "UTF-8"), UA_WEB, 6000);
                 Matcher mUrl = Pattern.compile("\\[\"garturlres\",\"(https?:\\\\?/\\\\?/[^\"\\\\]+(?:\\\\/[^\"\\\\]+)*)\"").matcher(batch);
                 if (mUrl.find()) return mUrl.group(1).replace("\\/", "/").replace("\\u003d", "=").replace("\\u0026", "&");
             }
@@ -474,7 +443,7 @@ public class NetHelper {
                 else break;
             }
             String u = sb.toString();
-            return (u.startsWith("http") && u.contains(".")) ? u : null;
+            return (u.startsWith("http") && u.contains(".") && !u.contains("news.google.com")) ? u : null;
         } catch (Exception ignored) { return null; }
     }
 

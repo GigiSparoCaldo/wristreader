@@ -126,28 +126,32 @@ public class RedditView {
     }
 
     private List<JSONObject> fetchRedditPosts(String enc, String mode, boolean force, TextView loading) throws Exception {
-        String api = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
-                ? "https://api.reddit.com/r/" + enc + "/top?t=" + mode + "&limit=20&raw_json=1"
+        String path = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
+                ? "/top.json?t=" + mode + "&limit=20&raw_json=1"
                 : "random".equals(mode)
-                ? "https://api.reddit.com/r/" + enc + "/top?t=week&limit=28&raw_json=1"
-                : "https://api.reddit.com/r/" + enc + "/hot?limit=18&raw_json=1";
-        try {
-            String rawJson = net.getCached(api, NetHelper.UA_REDDIT, force,
-                    msg -> app.runOnUiThread(() -> loading.setText(msg))).trim();
-            if (!rawJson.startsWith("{")) throw new Exception("Risposta HTML");
-            JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
-            List<JSONObject> posts = new ArrayList<>();
-            for (int i = 0; i < children.length(); i++) {
-                JSONObject p = children.optJSONObject(i).optJSONObject("data");
-                if (p != null) posts.add(p);
-            }
-            if (!posts.isEmpty()) return posts;
-        } catch (Exception ignored) {}
+                ? "/top.json?t=week&limit=28&raw_json=1"
+                : "/hot.json?limit=18&raw_json=1";
 
-        String rssUrl = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
-                ? "https://www.reddit.com/r/" + enc + "/top/.rss?t=" + mode + "&limit=20"
-                : "https://www.reddit.com/r/" + enc + "/.rss?limit=20";
-        String xml = net.getCached(rssUrl, NetHelper.UA_WEB, force,
+        String[] hosts = {"https://www.reddit.com/r/", "https://old.reddit.com/r/"};
+        for (String h : hosts) {
+            try {
+                String rawJson = net.getCached(h + enc + path, NetHelper.UA_REDDIT, force,
+                        msg -> app.runOnUiThread(() -> loading.setText(msg))).trim();
+                if (!rawJson.startsWith("{")) continue;
+                JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
+                List<JSONObject> posts = new ArrayList<>();
+                for (int i = 0; i < children.length(); i++) {
+                    JSONObject p = children.optJSONObject(i).optJSONObject("data");
+                    if (p != null) posts.add(p);
+                }
+                if (!posts.isEmpty()) return posts;
+            } catch (Exception ignored) {}
+        }
+
+        String rssPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
+                ? "/top/.rss?t=" + mode + "&limit=20"
+                : "/.rss?limit=20";
+        String xml = net.getCached("https://www.reddit.com/r/" + enc + rssPath, NetHelper.UA_REDDIT, force,
                 msg -> app.runOnUiThread(() -> loading.setText(msg)));
         List<NetHelper.RssEntry> entries = net.parseRss(xml);
         List<JSONObject> fallback = new ArrayList<>();
@@ -157,11 +161,10 @@ public class RedditView {
             obj.put("author", "reddit");
             obj.put("score", 0);
             obj.put("num_comments", 0);
-            String perm = it.link.replaceFirst("^https?://[^/]+", "");
-            obj.put("permalink", perm);
+            obj.put("permalink", it.link.replaceFirst("^https?://[^/]+", ""));
             obj.put("selftext", it.summary);
             obj.put("url", it.imageUrl.isEmpty() ? it.link : it.imageUrl);
-            obj.put("is_self", true);
+            obj.put("is_self", it.imageUrl.isEmpty());
             fallback.add(obj);
         }
         return fallback;
@@ -174,7 +177,7 @@ public class RedditView {
         String author = post.optString("author", "?");
         int score = post.optInt("score", 0);
         int numComm = post.optInt("num_comments", 0);
-        final String permalink = "https://api.reddit.com" + post.optString("permalink", "");
+        final String permalink = "https://www.reddit.com" + post.optString("permalink", "");
         String selfText = post.optString("selftext", "");
         final String postUrl = post.optString("url", "");
 
@@ -210,8 +213,14 @@ public class RedditView {
         }
 
         String vid = extractVideo(post);
-        String img = extractImage(post);
-        if (img != null && !img.isEmpty()) app.addSmartImage(card, img, 340);
+        List<String> imgs = extractImages(post);
+        if (imgs.size() == 1) {
+            app.addSmartImage(card, imgs.get(0), 340, "🖼 Carica foto");
+        } else if (imgs.size() > 1) {
+            for (int idx = 0; idx < Math.min(imgs.size(), 6); idx++) {
+                app.addSmartImage(card, imgs.get(idx), 340, "🖼 Foto " + (idx + 1) + "/" + imgs.size());
+            }
+        }
         if (vid != null && !vid.isEmpty()) {
             final String fVid = vid;
             ui.addPill(card, "▶ Riproduci Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(fVid));
@@ -219,13 +228,15 @@ public class RedditView {
         if (!selfText.isEmpty()) {
             ui.addBody(card, selfText.length() > 140 ? selfText.substring(0, 140) + "..." : selfText, 12f, "#CBD5E1");
         }
-        if (!post.optBoolean("is_self", false) && vid == null
+        if (!post.optBoolean("is_self", false) && vid == null && imgs.isEmpty()
                 && !postUrl.contains("i.redd.it") && !postUrl.contains("reddit.com/gallery") && postUrl.startsWith("http")) {
             ui.addPill(card, "Leggi articolo web ↗", "#0284C7", "#0369A1", null, "#FFFFFF", v ->
-                    app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false), () -> app.loadSmartUrl(postUrl, false)));
+                    app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false),
+                            () -> app.loadSmartUrl(postUrl, false, shownTitle, selfText)));
         }
         ui.addPill(card, "Commenti (" + numComm + ")", "#1B2332", "#263145", "#334155", "#38BDF8", v ->
-                app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false), () -> loadComments(permalink, tvTitle.getText().toString(), false)));
+                app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false),
+                        () -> loadComments(permalink, tvTitle.getText().toString(), false)));
 
         ui.contentBox.addView(card);
         return tvTitle;
@@ -241,40 +252,71 @@ public class RedditView {
 
         pool.execute(() -> {
             try {
-                String clean = permalink.replace("://www.reddit.com", "://api.reddit.com")
-                        .replace("://old.reddit.com", "://api.reddit.com").split("\\?")[0].replaceAll("/$", "");
-                String raw = net.getCached(clean + "?limit=30&depth=4&raw_json=1", NetHelper.UA_REDDIT, force).trim();
-                if (!raw.startsWith("[")) throw new Exception("Commenti non disponibili in JSON");
-                JSONArray arr = new JSONArray(raw);
-                JSONObject postData = arr.getJSONObject(0).getJSONObject("data").getJSONArray("children").getJSONObject(0).getJSONObject("data");
-                JSONArray commentsArr = arr.getJSONObject(1).getJSONObject("data").getJSONArray("children");
+                String cleanPath = permalink.replaceFirst("^https?://[^/]+", "").split("\\?")[0].replaceAll("/$", "");
+                String raw = null;
+                for (String host : new String[]{"https://www.reddit.com", "https://old.reddit.com"}) {
+                    try {
+                        String candidate = net.getCached(host + cleanPath + ".json?limit=30&depth=4&raw_json=1", NetHelper.UA_REDDIT, force).trim();
+                        if (candidate.startsWith("[")) { raw = candidate; break; }
+                    } catch (Exception ignored) {}
+                }
 
-                final String rawT = postData.optString("title", fallbackTitle);
-                final String rawS = postData.optString("selftext", "");
+                if (raw != null) {
+                    JSONArray arr = new JSONArray(raw);
+                    JSONObject postData = arr.getJSONObject(0).getJSONObject("data").getJSONArray("children").getJSONObject(0).getJSONObject("data");
+                    JSONArray commentsArr = arr.getJSONObject(1).getJSONObject("data").getJSONArray("children");
+                    final String rawT = postData.optString("title", fallbackTitle);
+                    final String rawS = postData.optString("selftext", "");
 
-                app.runOnUiThread(() -> {
-                    ui.contentBox.removeView(loading);
-                    ui.addTitle(rawT, "#F8FAFC");
-                    ui.addSub("u/" + postData.optString("author", "?") + " • ▲ " + postData.optInt("score", 0));
-                    String img = extractImage(postData);
-                    if (img != null && !img.isEmpty()) app.addSmartImage(ui.contentBox, img, 420);
-                    String vid = extractVideo(postData);
-                    if (vid != null && !vid.isEmpty()) {
-                        ui.addPill(ui.contentBox, "▶ Guarda Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vid));
-                    }
-                    if (!rawS.isEmpty()) {
-                        final TextView tvSelf = ui.addBody(ui.contentBox, rawS, 13.5f, "#E2E8F0");
-                        if (app.autoTranslateIt) {
-                            net.transPool.execute(() -> {
-                                if (gen != net.transGen) return;
-                                final String trS = net.translateIt(rawS);
-                                if (gen == net.transGen && !trS.equals(rawS)) app.runOnUiThread(() -> tvSelf.setText(trS));
-                            });
+                    app.runOnUiThread(() -> {
+                        ui.contentBox.removeView(loading);
+                        ui.addTitle(rawT, "#F8FAFC");
+                        ui.addSub("u/" + postData.optString("author", "?") + " • ▲ " + postData.optInt("score", 0));
+                        List<String> imgs = extractImages(postData);
+                        for (int k = 0; k < Math.min(imgs.size(), 8); k++) {
+                            app.addSmartImage(ui.contentBox, imgs.get(k), 420,
+                                    imgs.size() > 1 ? ("🖼 Foto " + (k + 1) + "/" + imgs.size()) : "🖼 Carica foto");
                         }
-                    }
-                    ui.addSection("COMMENTI");
-                    renderTree(commentsArr, 0, gen);
-                });
+                        String vid = extractVideo(postData);
+                        if (vid != null && !vid.isEmpty()) {
+                            ui.addPill(ui.contentBox, "▶ Guarda Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vid));
+                        }
+                        if (!rawS.isEmpty()) {
+                            final TextView tvSelf = ui.addBody(ui.contentBox, rawS, 13.5f, "#E2E8F0");
+                            if (app.autoTranslateIt) {
+                                net.transPool.execute(() -> {
+                                    if (gen != net.transGen) return;
+                                    final String trS = net.translateIt(rawS);
+                                    if (gen == net.transGen && !trS.equals(rawS)) app.runOnUiThread(() -> tvSelf.setText(trS));
+                                });
+                            }
+                        }
+                        ui.addSection("COMMENTI");
+                        renderTree(commentsArr, 0, gen);
+                    });
+                } else {
+                    String xml = net.getCached("https://www.reddit.com" + cleanPath + "/.rss?limit=30", NetHelper.UA_REDDIT, force);
+                    final List<NetHelper.RssEntry> entries = net.parseRss(xml);
+                    app.runOnUiThread(() -> {
+                        ui.contentBox.removeView(loading);
+                        ui.addTitle(fallbackTitle, "#F8FAFC");
+                        ui.addSection("COMMENTI");
+                        for (int i = 1; i < entries.size(); i++) {
+                            LinearLayout box = ui.card();
+                            ui.addBody(box, entries.get(i).title, 10.5f, "#38BDF8");
+                            final String orig = entries.get(i).summary;
+                            final TextView tv = ui.addBody(box, orig, 12.5f, "#E2E8F0");
+                            if (app.autoTranslateIt && !orig.isEmpty()) {
+                                net.transPool.execute(() -> {
+                                    if (gen != net.transGen) return;
+                                    final String tr = net.translateIt(orig);
+                                    if (gen == net.transGen && !tr.equals(orig)) app.runOnUiThread(() -> tv.setText(tr));
+                                });
+                            }
+                            ui.contentBox.addView(box);
+                        }
+                    });
+                }
             } catch (Throwable e) {
                 app.runOnUiThread(() -> loading.setText("Errore commenti: " + e.getMessage()));
             }
@@ -316,7 +358,7 @@ public class RedditView {
                 box.addView(trBtn);
             }
             Matcher mImg = Pattern.compile("(https?://\\S+\\.(?:jpg|jpeg|png|webp))", Pattern.CASE_INSENSITIVE).matcher(orig);
-            if (mImg.find()) app.addSmartImage(box, mImg.group(1), 260);
+            if (mImg.find()) app.addSmartImage(box, mImg.group(1), 260, "🖼 Carica foto");
             ui.contentBox.addView(box);
 
             Object rep = c.opt("replies");
@@ -332,7 +374,12 @@ public class RedditView {
             if (m == null) m = post.optJSONObject("media");
             if (m != null && m.has("reddit_video")) {
                 String f = m.getJSONObject("reddit_video").optString("fallback_url", "");
-                if (!f.isEmpty()) return f;
+                if (!f.isEmpty()) return f.replace("&amp;", "&");
+            }
+            JSONObject prev = post.optJSONObject("preview");
+            if (prev != null && prev.has("reddit_video_preview")) {
+                String f = prev.getJSONObject("reddit_video_preview").optString("fallback_url", "");
+                if (!f.isEmpty()) return f.replace("&amp;", "&");
             }
             JSONArray cross = post.optJSONArray("crosspost_parent_list");
             if (cross != null && cross.length() > 0) return extractVideo(cross.getJSONObject(0));
@@ -341,9 +388,38 @@ public class RedditView {
         return u.endsWith(".mp4") ? u : null;
     }
 
-    private String extractImage(JSONObject post) {
+    private List<String> extractImages(JSONObject post) {
+        List<String> list = new ArrayList<>();
+        try {
+            JSONObject meta = post.optJSONObject("media_metadata");
+            JSONObject gal = post.optJSONObject("gallery_data");
+            if (meta != null && gal != null) {
+                JSONArray items = gal.optJSONArray("items");
+                if (items != null) {
+                    for (int i = 0; i < items.length(); i++) {
+                        String mid = items.getJSONObject(i).optString("media_id", "");
+                        JSONObject mObj = meta.optJSONObject(mid);
+                        if (mObj != null) {
+                            JSONArray pArr = mObj.optJSONArray("p");
+                            String u = "";
+                            if (pArr != null && pArr.length() > 0) {
+                                u = pArr.getJSONObject(Math.min(2, pArr.length() - 1)).optString("u", "");
+                            } else if (mObj.has("s")) {
+                                u = mObj.getJSONObject("s").optString("u", "");
+                            }
+                            if (!u.isEmpty()) list.add(u.replace("&amp;", "&"));
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        if (!list.isEmpty()) return list;
+
         String u = post.optString("url", "");
-        if (u.matches(".*\\.(jpg|jpeg|png|webp)(\\?.*)?$")) return u;
+        if (u.matches(".*\\.(jpg|jpeg|png|webp|gif)(\\?.*)?$")) {
+            list.add(u.replace("&amp;", "&"));
+            return list;
+        }
         try {
             JSONObject prev = post.optJSONObject("preview");
             if (prev != null) {
@@ -351,12 +427,15 @@ public class RedditView {
                 if (imgs != null && imgs.length() > 0) {
                     JSONObject img0 = imgs.getJSONObject(0);
                     JSONArray res = img0.optJSONArray("resolutions");
-                    if (res != null && res.length() > 0) return res.getJSONObject(Math.min(2, res.length() - 1)).optString("url", "");
-                    return img0.getJSONObject("source").optString("url", "");
+                    String pu = (res != null && res.length() > 0)
+                            ? res.getJSONObject(Math.min(2, res.length() - 1)).optString("url", "")
+                            : img0.getJSONObject("source").optString("url", "");
+                    if (!pu.isEmpty()) { list.add(pu.replace("&amp;", "&")); return list; }
                 }
             }
         } catch (Exception ignored) {}
         String th = post.optString("thumbnail", "");
-        return th.startsWith("http") ? th : null;
+        if (th.startsWith("http")) list.add(th);
+        return list;
     }
 }
