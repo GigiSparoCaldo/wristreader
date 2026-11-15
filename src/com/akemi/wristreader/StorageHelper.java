@@ -53,6 +53,39 @@ public class StorageHelper {
     public boolean isBoardFollowed(String b) { return containsItem("followed_boards", "g,v,sci,wg", b); }
     public void toggleBoard(String b) { toggleItem("followed_boards", "g,v,sci,wg", b); }
 
+    public JSONArray getFollowedRss() {
+        try { return new JSONArray(prefs.getString("followed_rss_json", "[]")); }
+        catch (Exception e) { return new JSONArray(); }
+    }
+
+    public boolean isRssFollowed(String url) {
+        JSONArray arr = getFollowedRss();
+        for (int i = 0; i < arr.length(); i++) {
+            if (url.equalsIgnoreCase(arr.optJSONObject(i).optString("url"))) return true;
+        }
+        return false;
+    }
+
+    public void toggleRss(String name, String url) {
+        JSONArray arr = getFollowedRss();
+        JSONArray next = new JSONArray();
+        boolean removed = false;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o != null && url.equalsIgnoreCase(o.optString("url"))) { removed = true; continue; }
+            if (o != null) next.put(o);
+        }
+        if (!removed) {
+            try {
+                JSONObject item = new JSONObject();
+                item.put("name", name.isEmpty() ? url : name);
+                item.put("url", url);
+                next.put(item);
+            } catch (Exception ignored) {}
+        }
+        prefs.edit().putString("followed_rss_json", next.toString()).apply();
+    }
+
     public JSONArray getBookmarks() {
         try { return new JSONArray(prefs.getString("bookmarks_json", "[]")); }
         catch (Exception e) { return new JSONArray(); }

@@ -1,12 +1,14 @@
 package com.akemi.wristreader;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.speech.RecognizerIntent;
 import android.text.Html;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -22,6 +24,7 @@ import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -30,16 +33,17 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public class MainActivity extends Activity {
+    private static final int REQ_VOICE = 901;
     private UiHelper ui;
     private NetHelper net;
     public StorageHelper store;
     private RedditView reddit;
     private FourChanView fourChan;
+    private EditText homeInput;
     private final ExecutorService pool = Executors.newFixedThreadPool(3);
     private final List<UiHelper.NavEntry> backStack = new ArrayList<>();
     private long lastBackPressMs = 0L;
-    private float touchStartX = 0f;
-    private float touchStartY = 0f;
+    private float touchStartX = 0f, touchStartY = 0f;
     private boolean swipeTriggered = false;
 
     public boolean imagesOnTap = true;
@@ -66,12 +70,9 @@ public class MainActivity extends Activity {
         if (ui != null) {
             int action = ev.getActionMasked();
             if (action == MotionEvent.ACTION_DOWN) {
-                touchStartX = ev.getX();
-                touchStartY = ev.getY();
-                swipeTriggered = false;
+                touchStartX = ev.getX(); touchStartY = ev.getY(); swipeTriggered = false;
             } else if (action == MotionEvent.ACTION_MOVE && !swipeTriggered) {
-                float dx = ev.getX() - touchStartX;
-                float dy = ev.getY() - touchStartY;
+                float dx = ev.getX() - touchStartX, dy = ev.getY() - touchStartY;
                 if (Math.abs(dx) > ui.dp(62) && Math.abs(dx) > Math.abs(dy) * 1.65f) {
                     swipeTriggered = true;
                     MotionEvent cancel = MotionEvent.obtain(ev);
@@ -82,8 +83,7 @@ public class MainActivity extends Activity {
                     return true;
                 }
             } else if (action == MotionEvent.ACTION_UP && swipeTriggered) {
-                swipeTriggered = false;
-                return true;
+                swipeTriggered = false; return true;
             }
         }
         return super.dispatchTouchEvent(ev);
@@ -93,11 +93,6 @@ public class MainActivity extends Activity {
     public boolean dispatchGenericMotionEvent(MotionEvent ev) {
         if (ui != null && ui.handleRotary(ev)) return true;
         return super.dispatchGenericMotionEvent(ev);
-    }
-
-    public void toggleAutoTranslate() {
-        autoTranslateIt = !autoTranslateIt;
-        getSharedPreferences("wrist_prefs", MODE_PRIVATE).edit().putBoolean("auto_translate_it", autoTranslateIt).apply();
     }
 
     @Override
@@ -119,12 +114,25 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (ui != null) ui.closeOverlay();
+        if (ui != null) { ui.closeOverlay(); ui.shutdownTts(); }
         pool.shutdownNow();
         super.onDestroy();
     }
 
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req == REQ_VOICE && res == RESULT_OK && data != null) {
+            ArrayList<String> matches = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if (matches != null && !matches.isEmpty() && homeInput != null) {
+                homeInput.setText(matches.get(0));
+                handleQuery(matches.get(0));
+            }
+        }
+    }
+
     public void navigateTo(Runnable next) {
+        if (backStack.size() >= 8) backStack.remove(0);
         backStack.add(ui.captureState());
         next.run();
     }
@@ -139,6 +147,11 @@ public class MainActivity extends Activity {
         ui.rescaleText(ui.contentBox, ui.fontScale / oldScale);
     }
 
+    public void toggleAutoTranslate() {
+        autoTranslateIt = !autoTranslateIt;
+        getSharedPreferences("wrist_prefs", MODE_PRIVATE).edit().putBoolean("auto_translate_it", autoTranslateIt).apply();
+    }
+
     private String fontLabel() {
         if (ui.fontScale < 0.95f) return "Piccolo (S)";
         if (ui.fontScale < 1.15f) return "Normale (M)";
@@ -146,56 +159,85 @@ public class MainActivity extends Activity {
         return "Extra (XL)";
     }
 
+    private void handleQuery(String raw) {
+        String q = raw.trim();
+        if (q.isEmpty()) return;
+        if (q.matches("^/?[a-z0-9]{1,6}/?$") && !q.contains(".")) {
+            navigateTo(() -> fourChan.loadBoard(q, "bump", false));
+        } else if (q.contains("4chan.org/") || q.contains("4channel.org/")) {
+            Matcher tm = Pattern.compile("4chan(?:nel)?\\.org/([^/]+)/thread/(\\d+)").matcher(q);
+            if (tm.find()) {
+                final String b = tm.group(1); final long no = Long.parseLong(tm.group(2));
+                navigateTo(() -> fourChan.loadThread(b, no, "", false));
+            } else {
+                String b = q.replaceAll(".*4chan(?:nel)?\\.org/([^/]+).*", "$1");
+                navigateTo(() -> fourChan.loadBoard(b, "bump", false));
+            }
+        } else if (q.startsWith("r/") || q.startsWith("/r/")) {
+            String sub = q.replaceFirst("^/?r/", "").trim();
+            navigateTo(() -> reddit.loadFeed(sub, false, "hot", false));
+        } else if (q.contains("reddit.com/r/")) {
+            if (q.endsWith(".rss") || q.contains(".rss?")) navigateTo(() -> loadSmartUrl(q, false));
+            else if (q.contains("/comments/")) navigateTo(() -> reddit.loadComments(q, "Post Reddit", "best", false));
+            else {
+                String sub = q.replaceAll(".*reddit\\.com/r/([^/]+).*", "$1");
+                navigateTo(() -> reddit.loadFeed(sub, false, "hot", false));
+            }
+        } else if (q.startsWith("http://") || q.startsWith("https://") || (!q.contains(" ") && q.contains("."))) {
+            navigateTo(() -> loadSmartUrl(q.startsWith("http") ? q : "https://" + q, false));
+        } else {
+            navigateTo(() -> loadSearch(q, false));
+        }
+    }
+
+    private void startVoiceInput() {
+        try {
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
+            intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Parla ora...");
+            startActivityForResult(intent, REQ_VOICE);
+        } catch (Exception e) {
+            Toast.makeText(this, "Dettatura vocale non presente", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void showHome() {
         ui.clear();
         ui.addTitle("WristReader", "#38BDF8");
         ui.addSub("Reddit • 4chan • News • Web");
 
-        final EditText input = new EditText(this);
-        input.setHint("r/sub, /g/, link o cerca...");
-        input.setHintTextColor(Color.parseColor("#64748B"));
-        input.setTextColor(Color.WHITE);
-        input.setTextSize(ui.sp(13f));
-        input.setGravity(Gravity.CENTER);
-        input.setBackground(ui.roundBox("#141923", "#2A3447", 24));
-        input.setPadding(ui.dp(14), ui.dp(10), ui.dp(14), ui.dp(10));
-        input.setSingleLine(true);
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+        LinearLayout barRow = new LinearLayout(this);
+        barRow.setOrientation(LinearLayout.HORIZONTAL);
+        barRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams brLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ilp.setMargins(0, ui.dp(4), 0, ui.dp(8));
-        input.setLayoutParams(ilp);
-        ui.contentBox.addView(input);
+        brLp.setMargins(0, ui.dp(4), 0, ui.dp(8));
+        barRow.setLayoutParams(brLp);
 
-        ui.addPill(ui.contentBox, "Apri / Cerca Web", "#0284C7", "#0369A1", null, "#FFFFFF", v -> {
-            String q = input.getText().toString().trim();
-            if (q.isEmpty()) return;
-            if (q.matches("^/?[a-z0-9]{1,6}/?$") && !q.contains(".")) {
-                navigateTo(() -> fourChan.loadBoard(q, "bump", false));
-            } else if (q.contains("4chan.org/") || q.contains("4channel.org/")) {
-                Matcher tm = Pattern.compile("4chan(?:nel)?\\.org/([^/]+)/thread/(\\d+)").matcher(q);
-                if (tm.find()) {
-                    final String b = tm.group(1); final long no = Long.parseLong(tm.group(2));
-                    navigateTo(() -> fourChan.loadThread(b, no, "", false));
-                } else {
-                    String b = q.replaceAll(".*4chan(?:nel)?\\.org/([^/]+).*", "$1");
-                    navigateTo(() -> fourChan.loadBoard(b, "bump", false));
-                }
-            } else if (q.startsWith("r/") || q.startsWith("/r/")) {
-                String sub = q.replaceFirst("^/?r/", "").trim();
-                navigateTo(() -> reddit.loadFeed(sub, false, "hot", false));
-            } else if (q.contains("reddit.com/r/")) {
-                if (q.endsWith(".rss") || q.contains(".rss?")) navigateTo(() -> loadSmartUrl(q, false));
-                else if (q.contains("/comments/")) navigateTo(() -> reddit.loadComments(q, "Post Reddit", "best", false));
-                else {
-                    String sub = q.replaceAll(".*reddit\\.com/r/([^/]+).*", "$1");
-                    navigateTo(() -> reddit.loadFeed(sub, false, "hot", false));
-                }
-            } else if (q.startsWith("http://") || q.startsWith("https://") || (!q.contains(" ") && q.contains("."))) {
-                navigateTo(() -> loadSmartUrl(q.startsWith("http") ? q : "https://" + q, false));
-            } else {
-                navigateTo(() -> loadSearch(q, false));
-            }
-        });
+        homeInput = new EditText(this);
+        homeInput.setHint("r/sub, /g/, link...");
+        homeInput.setHintTextColor(Color.parseColor("#64748B"));
+        homeInput.setTextColor(Color.WHITE);
+        homeInput.setTextSize(ui.sp(12.5f));
+        homeInput.setGravity(Gravity.CENTER);
+        homeInput.setBackground(ui.roundBox("#141923", "#2A3447", 24));
+        homeInput.setPadding(ui.dp(10), ui.dp(10), ui.dp(10), ui.dp(10));
+        homeInput.setSingleLine(true);
+        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        homeInput.setLayoutParams(ilp);
+        barRow.addView(homeInput);
+
+        Button micBtn = ui.chip("🎤", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.leftMargin = ui.dp(5);
+        micBtn.setLayoutParams(mlp);
+        micBtn.setOnClickListener(v -> startVoiceInput());
+        barRow.addView(micBtn);
+        ui.contentBox.addView(barRow);
+
+        ui.addPill(ui.contentBox, "Apri / Cerca Web", "#0284C7", "#0369A1", null, "#FFFFFF",
+                v -> handleQuery(homeInput.getText().toString()));
 
         LinearLayout searchRow = new LinearLayout(this);
         searchRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -210,7 +252,7 @@ public class MainActivity extends Activity {
         lp1.rightMargin = ui.dp(3);
         bRedS.setLayoutParams(lp1);
         bRedS.setOnClickListener(v -> {
-            String q = input.getText().toString().trim();
+            String q = homeInput.getText().toString().trim();
             if (!q.isEmpty()) navigateTo(() -> reddit.searchReddit(q, false));
         });
         searchRow.addView(bRedS);
@@ -220,7 +262,7 @@ public class MainActivity extends Activity {
         lp2.leftMargin = ui.dp(3);
         bNewsS.setLayoutParams(lp2);
         bNewsS.setOnClickListener(v -> {
-            String q = input.getText().toString().trim();
+            String q = homeInput.getText().toString().trim();
             if (q.isEmpty()) navigateTo(() -> loadRss("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it", "Google News Italia", false));
             else {
                 try {
@@ -286,8 +328,7 @@ public class MainActivity extends Activity {
         });
         ui.addPill(ui.contentBox, autoTranslateIt ? "🌐 Traduzione IT: ATTIVA" : "🌐 Traduzione IT: SPENTA",
                 "#141923", "#222B3A", autoTranslateIt ? "#0284C7" : "#334155", autoTranslateIt ? "#38BDF8" : "#94A3B8", v -> {
-                    autoTranslateIt = !autoTranslateIt;
-                    getSharedPreferences("wrist_prefs", MODE_PRIVATE).edit().putBoolean("auto_translate_it", autoTranslateIt).apply();
+                    toggleAutoTranslate();
                     showHome();
                 });
         ui.addPill(ui.contentBox, imagesOnTap ? "🖼 Foto: Solo al tocco" : "🖼 Foto: Automatiche",
@@ -304,6 +345,17 @@ public class MainActivity extends Activity {
         }
 
         ui.addSection("NOTIZIE & RSS");
+        JSONArray customRss = store.getFollowedRss();
+        for (int i = 0; i < customRss.length(); i++) {
+            JSONObject ro = customRss.optJSONObject(i);
+            if (ro == null) continue;
+            final String rName = ro.optString("name", "Feed RSS");
+            final String rUrl = ro.optString("url", "");
+            if (!rUrl.isEmpty()) {
+                ui.addPill(ui.contentBox, "📡 " + rName, "#14263C", "#1E3A5F", "#0284C7", "#7DD3FC",
+                        v -> navigateTo(() -> loadRss(rUrl, rName, false)));
+            }
+        }
         ui.addPill(ui.contentBox, "Google News Italia", "#141923", "#1E2634", "#263042", "#F8FAFC",
                 v -> navigateTo(() -> loadRss("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it", "Google News Italia", false)));
         ui.addPill(ui.contentBox, "Google News Tech", "#141923", "#1E2634", "#263042", "#F8FAFC",
@@ -333,9 +385,14 @@ public class MainActivity extends Activity {
             ui.addPill(card, "Leggi Offline", "#0284C7", "#0369A1", null, "#FFFFFF", v -> navigateTo(() -> {
                 ui.clear();
                 ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, null);
-                ui.addTitle(o.optString("title", ""), "#38BDF8");
+                final String bTitle = o.optString("title", "");
+                final String bBody = o.optString("body", "");
+                ui.addTitle(bTitle, "#38BDF8");
                 ui.addSub(o.optString("sub", ""));
-                ui.addBody(ui.contentBox, o.optString("body", ""), 13.5f, "#E2E8F0");
+                final Button spk = ui.pill("🔊 Ascolta", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
+                spk.setOnClickListener(sv -> ui.toggleSpeak(bTitle + ". " + bBody, spk));
+                ui.contentBox.addView(spk);
+                ui.addBody(ui.contentBox, bBody, 13.5f, "#E2E8F0");
             }));
             ui.addPill(card, "Rimuovi", "#291711", "#431F12", "#9A3412", "#FCA5A5", v -> {
                 store.toggleBookmark(o.optString("id"), "", "", "", "", "");
@@ -397,6 +454,18 @@ public class MainActivity extends Activity {
         ui.clear();
         ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, () -> loadRss(url, title, true));
         ui.addTitle(title, "#38BDF8");
+
+        boolean fol = store.isRssFollowed(url);
+        final Button followRssBtn = ui.pill(fol ? "✓ Feed RSS Seguito" : "+ Segui Feed RSS",
+                fol ? "#132A22" : "#15803D", fol ? "#1B3B2F" : "#166534",
+                fol ? "#10B981" : null, fol ? "#34D399" : "#FFFFFF");
+        followRssBtn.setOnClickListener(v -> {
+            store.toggleRss(title, url);
+            boolean now = store.isRssFollowed(url);
+            followRssBtn.setText(now ? "✓ Feed RSS Seguito" : "+ Segui Feed RSS");
+        });
+        ui.contentBox.addView(followRssBtn);
+
         final TextView loading = ui.addBody(ui.contentBox, "Avvio richiesta RSS...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
@@ -476,15 +545,29 @@ public class MainActivity extends Activity {
         final String bmId = "web_" + pageUrl;
         final String finalTitle = title;
         final StringBuilder collected = new StringBuilder();
+
+        LinearLayout actRow = new LinearLayout(this);
+        actRow.setOrientation(LinearLayout.HORIZONTAL);
+        actRow.setGravity(Gravity.CENTER);
         boolean saved = store.isBookmarked(bmId);
-        final Button bmBtn = ui.pill(saved ? "★ Articolo salvato" : "☆ Salva articolo offline",
+        final Button bmBtn = ui.chip(saved ? "★ Salvato" : "☆ Salva",
                 "#141923", "#1E2634", saved ? "#F59E0B" : "#334155", saved ? "#FBBF24" : "#CBD5E1");
+        LinearLayout.LayoutParams bLp1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        bLp1.rightMargin = ui.dp(3);
+        bmBtn.setLayoutParams(bLp1);
         bmBtn.setOnClickListener(v -> {
             store.toggleBookmark(bmId, "web", finalTitle, pageUrl, pageUrl, collected.toString());
-            boolean now = store.isBookmarked(bmId);
-            bmBtn.setText(now ? "★ Articolo salvato" : "☆ Salva articolo offline");
+            bmBtn.setText(store.isBookmarked(bmId) ? "★ Salvato" : "☆ Salva");
         });
-        ui.contentBox.addView(bmBtn);
+        actRow.addView(bmBtn);
+
+        final Button spkBtn = ui.chip("🔊 Ascolta", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
+        LinearLayout.LayoutParams bLp2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        bLp2.leftMargin = ui.dp(3);
+        spkBtn.setLayoutParams(bLp2);
+        spkBtn.setOnClickListener(v -> ui.toggleSpeak(finalTitle + ". " + collected.toString(), spkBtn));
+        actRow.addView(spkBtn);
+        ui.contentBox.addView(actRow);
 
         String ogImg = "";
         Matcher mOgImg = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']").matcher(html);
@@ -521,10 +604,14 @@ public class MainActivity extends Activity {
     }
 
     public void addSmartImage(final LinearLayout container, final String imgUrl, final int maxH, final String label) {
-        if (!imagesOnTap) {
+        Bitmap cached = ui.bmpCache.get(imgUrl);
+        if (!imagesOnTap || cached != null) {
             ImageView iv = new ImageView(this);
             iv.setAdjustViewBounds(true); iv.setMaxHeight(maxH); iv.setPadding(0, ui.dp(4), 0, ui.dp(6));
-            container.addView(iv); loadImageAsync(imgUrl, iv); return;
+            container.addView(iv);
+            if (cached != null) { iv.setImageBitmap(cached); iv.setOnClickListener(v -> ui.showFullImage(cached)); }
+            else loadImageAsync(imgUrl, iv);
+            return;
         }
         final Button btn = ui.pill(label, "#0E1726", "#16243B", "#1D4ED8", "#60A5FA");
         btn.setOnClickListener(v -> {
@@ -547,8 +634,12 @@ public class MainActivity extends Activity {
                 int maxW = Math.max(300, ui.screenWidthPx - ui.dp(48)), sample = 1;
                 while (o.outWidth / sample > maxW) sample *= 2;
                 o.inJustDecodeBounds = false; o.inSampleSize = sample;
+                o.inPreferredConfig = Bitmap.Config.RGB_565;
                 final Bitmap bmp = BitmapFactory.decodeByteArray(b, 0, b.length, o);
-                if (bmp != null) runOnUiThread(() -> { target.setImageBitmap(bmp); target.setOnClickListener(v -> ui.showFullImage(bmp)); });
+                if (bmp != null) {
+                    ui.bmpCache.put(imgUrl, bmp);
+                    runOnUiThread(() -> { target.setImageBitmap(bmp); target.setOnClickListener(v -> ui.showFullImage(bmp)); });
+                }
             } catch (Exception ignored) {}
         });
     }
