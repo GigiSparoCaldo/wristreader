@@ -45,20 +45,40 @@ public class FourChanView {
         ui.addTitle("/" + board + "/", "#4ADE80");
         ui.addSub(modeLabel);
 
+        LinearLayout actionRow = new LinearLayout(app);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams arLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        arLp.setMargins(0, ui.dp(2), 0, ui.dp(6));
+        actionRow.setLayoutParams(arLp);
+
         boolean fol = app.store.isBoardFollowed(board);
-        ui.addPill(ui.contentBox, fol ? "✓ Board Seguita" : "+ Segui /" + board + "/",
+        Button fBtn = ui.chip(fol ? "✓ Seguita" : "+ Segui",
                 fol ? "#132A22" : "#15803D", fol ? "#1B3B2F" : "#166534",
-                fol ? "#10B981" : null, fol ? "#34D399" : "#FFFFFF", v -> {
-                    app.store.toggleBoard(board);
-                    loadBoard(board, sortMode, false);
-                });
+                fol ? "#10B981" : null, fol ? "#34D399" : "#FFFFFF");
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        flp.rightMargin = ui.dp(3);
+        fBtn.setLayoutParams(flp);
+        fBtn.setOnClickListener(v -> { app.store.toggleBoard(board); loadBoard(board, sortMode, false); });
+        actionRow.addView(fBtn);
+
+        Button trToggle = ui.chip(app.autoTranslateIt ? "🌐 IT: ON" : "🌐 Traduci IT",
+                app.autoTranslateIt ? "#0284C7" : "#172033", "#0369A1",
+                app.autoTranslateIt ? null : "#0284C7", "#FFFFFF");
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.leftMargin = ui.dp(3);
+        trToggle.setLayoutParams(tlp);
+        trToggle.setOnClickListener(v -> { app.toggleAutoTranslate(); loadBoard(board, sortMode, false); });
+        actionRow.addView(trToggle);
+        ui.contentBox.addView(actionRow);
 
         LinearLayout sortRow = new LinearLayout(app);
         sortRow.setOrientation(LinearLayout.HORIZONTAL);
         sortRow.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams srLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        srLp.setMargins(0, ui.dp(4), 0, ui.dp(8));
+        srLp.setMargins(0, ui.dp(2), 0, ui.dp(8));
         sortRow.setLayoutParams(srLp);
 
         String[][] filters = {{"Bump", "bump"}, {"💬", "replies"}, {"🖼", "images"}, {"🎲", "random"}};
@@ -121,25 +141,244 @@ public class FourChanView {
             final long no = th.optLong("no");
             int rep = th.optInt("replies", 0);
             int imgs = th.optInt("images", 0);
-            String sub = cleanHtmlText(th.optString("sub", ""));
-            String com = cleanHtmlText(th.optString("com", ""));
+            final String sub = cleanHtmlText(th.optString("sub", ""));
+            final String com = cleanHtmlText(th.optString("com", ""));
+            final String prev = com.length() > 180 ? com.substring(0, 180) + "..." : com;
 
             ui.addBody(card, "No." + no + "  •  💬 " + rep + "  •  🖼 " + imgs, 10.5f, "#94A3B8");
-            if (!sub.isEmpty()) {
-                TextView tvSub = ui.addBody(card, sub, 14f, "#4ADE80");
+            final TextView tvSub = !sub.isEmpty() ? ui.addBody(card, sub, 14f, "#4ADE80") : null;
+            if (tvSub != null) {
                 tvSub.setTypeface(null, Typeface.BOLD);
                 origTexts.add(sub);
                 textViews.add(tvSub);
             }
-            if (!com.isEmpty()) {
-                String prev = com.length() > 180 ? com.substring(0, 180) + "..." : com;
-                TextView tvCom = ui.addBody(card, format4chanSpans(prev), 12.5f, "#E2E8F0");
-                if (sub.isEmpty()) { origTexts.add(prev); textViews.add(tvCom); }
+            final TextView tvCom = !prev.isEmpty() ? ui.addBody(card, format4chanSpans(prev), 12.5f, "#E2E8F0") : null;
+            if (tvCom != null) {
+                origTexts.add(prev);
+                textViews.add(tvCom);
             }
+
+            if (!app.autoTranslateIt && (tvSub != null || tvCom != null)) {
+                final Button trOne = ui.pill("🌐 Traduci in IT", "#172033", "#1E293B", "#0284C7", "#38BDF8");
+                trOne.setOnClickListener(v -> {
+                    trOne.setText("Traduzione..."); trOne.setEnabled(false);
+                    net.transPool.execute(() -> {
+                        final String trS = tvSub != null ? net.translateIt(sub) : "";
+                        final String trC = tvCom != null ? net.translateIt(prev) : "";
+                        app.runOnUiThread(() -> {
+                            if (tvSub != null && !trS.isEmpty()) tvSub.setText(trS);
+                            if (tvCom != null && !trC.isEmpty()) tvCom.setText(format4chanSpans(trC));
+                            card.removeView(trOne);
+                        });
+                    });
+                });
+                card.addView(trOne);
+            }
+
             long tim = th.optLong("tim", 0);
             if (tim > 0) {
-                String thumbUrl = "https://i.4cdn.org/" + board + "/" + tim + "s.jpg";
-                app.addSmartImage(card, thumbUrl, 280, "🖼 Anteprima OP");
+                app.addSmartImage(card, "https://i.4cdn.org/" + board + "/" + tim + "s.jpg", 280, "🖼 Anteprima OP");
+            }
+            final String titleForNav = !sub.isEmpty() ? sub : ("Thread #" + no);
+            ui.addPill(card, "Apri Thread (" + (rep + 1) + " post)", "#1B2332", "#263145", "#334155", "#4ADE80", v ->
+                    app.navigateTo(() -> loadThread(board, no, titleForNav, false)));
+            ui.contentBox.addView(card);
+        }
+
+        if (app.autoTranslateIt && !origTexts.isEmpty()) {
+            net.translateTitlesAsync(origTexts, textViews, app);
+        }
+
+        if (end < all.size()) {
+            final Button moreBtn = ui.pill("Carica altri thread ↓ (" + (all.size() - end) + ")", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
+            moreBtn.setOnClickListener(v -> {
+                ui.contentBox.removeView(moreBtn);
+                renderCatalogSlice(board, all, end);
+            });
+            ui.contentBox.addView(moreBtn);
+        }
+    }
+EOFcat << 'EOF' > src/com/akemi/wristreader/FourChanView.java
+package com.akemi.wristreader;
+
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.text.Html;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+public class FourChanView {
+    private final MainActivity app;
+    private final UiHelper ui;
+    private final NetHelper net;
+    private final ExecutorService pool;
+
+    public FourChanView(MainActivity app, UiHelper ui, NetHelper net, ExecutorService pool) {
+        this.app = app; this.ui = ui; this.net = net; this.pool = pool;
+    }
+
+    public void loadBoard(final String rawBoard, final String sortMode, final boolean force) {
+        final String board = rawBoard.trim().replaceAll("^/+|/+$", "").toLowerCase(Locale.US);
+        ui.clear();
+        ui.addNavBar(app::onBackPressed, () -> app.cycleFontInPlace(), () -> loadBoard(board, sortMode, true));
+
+        String modeLabel = "replies".equals(sortMode) ? "💬 Più Risposte"
+                : "images".equals(sortMode) ? "🖼 Più Immagini"
+                : "random".equals(sortMode) ? "🎲 Casuale" : "🔥 Bump Order";
+
+        ui.addTitle("/" + board + "/", "#4ADE80");
+        ui.addSub(modeLabel);
+
+        LinearLayout actionRow = new LinearLayout(app);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams arLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        arLp.setMargins(0, ui.dp(2), 0, ui.dp(6));
+        actionRow.setLayoutParams(arLp);
+
+        boolean fol = app.store.isBoardFollowed(board);
+        Button fBtn = ui.chip(fol ? "✓ Seguita" : "+ Segui",
+                fol ? "#132A22" : "#15803D", fol ? "#1B3B2F" : "#166534",
+                fol ? "#10B981" : null, fol ? "#34D399" : "#FFFFFF");
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        flp.rightMargin = ui.dp(3);
+        fBtn.setLayoutParams(flp);
+        fBtn.setOnClickListener(v -> { app.store.toggleBoard(board); loadBoard(board, sortMode, false); });
+        actionRow.addView(fBtn);
+
+        Button trToggle = ui.chip(app.autoTranslateIt ? "🌐 IT: ON" : "🌐 Traduci IT",
+                app.autoTranslateIt ? "#0284C7" : "#172033", "#0369A1",
+                app.autoTranslateIt ? null : "#0284C7", "#FFFFFF");
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.leftMargin = ui.dp(3);
+        trToggle.setLayoutParams(tlp);
+        trToggle.setOnClickListener(v -> { app.toggleAutoTranslate(); loadBoard(board, sortMode, false); });
+        actionRow.addView(trToggle);
+        ui.contentBox.addView(actionRow);
+
+        LinearLayout sortRow = new LinearLayout(app);
+        sortRow.setOrientation(LinearLayout.HORIZONTAL);
+        sortRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams srLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        srLp.setMargins(0, ui.dp(2), 0, ui.dp(8));
+        sortRow.setLayoutParams(srLp);
+
+        String[][] filters = {{"Bump", "bump"}, {"💬", "replies"}, {"🖼", "images"}, {"🎲", "random"}};
+        for (int i = 0; i < filters.length; i++) {
+            final String fc = filters[i][1];
+            boolean act = fc.equals(sortMode);
+            Button sb = ui.chip(filters[i][0], act ? "#16A34A" : "#141923", act ? "#15803D" : "#1F2736",
+                    act ? null : "#2A3447", act ? "#FFFFFF" : "#94A3B8");
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) clp.leftMargin = ui.dp(4);
+            sb.setLayoutParams(clp);
+            sb.setOnClickListener(v -> loadBoard(board, fc, false));
+            sortRow.addView(sb);
+        }
+        ui.contentBox.addView(sortRow);
+
+        final TextView loading = ui.addBody(ui.contentBox, "Caricamento /" + board + "/...", 13f, "#E2E8F0");
+
+        pool.execute(() -> {
+            try {
+                String jsonStr = net.getCached("https://a.4cdn.org/" + board + "/catalog.json", NetHelper.UA_WEB, force,
+                        msg -> app.runOnUiThread(() -> loading.setText(msg)));
+                JSONArray pages = new JSONArray(jsonStr);
+                final List<JSONObject> threads = new ArrayList<>();
+                for (int p = 0; p < pages.length(); p++) {
+                    JSONArray tArr = pages.getJSONObject(p).optJSONArray("threads");
+                    if (tArr == null) continue;
+                    for (int t = 0; t < tArr.length(); t++) {
+                        JSONObject th = tArr.optJSONObject(t);
+                        if (th != null && th.optInt("sticky", 0) == 0) threads.add(th);
+                    }
+                }
+                if ("replies".equals(sortMode)) {
+                    Collections.sort(threads, (a, b) -> Integer.compare(b.optInt("replies"), a.optInt("replies")));
+                } else if ("images".equals(sortMode)) {
+                    Collections.sort(threads, (a, b) -> Integer.compare(b.optInt("images"), a.optInt("images")));
+                } else if ("random".equals(sortMode)) {
+                    Collections.shuffle(threads);
+                }
+
+                app.runOnUiThread(() -> {
+                    ui.contentBox.removeView(loading);
+                    if (threads.isEmpty()) { ui.addBody(ui.contentBox, "Nessun thread trovato.", 13f, "#E2E8F0"); return; }
+                    renderCatalogSlice(board, threads, 0);
+                });
+            } catch (Throwable e) {
+                app.runOnUiThread(() -> loading.setText("Errore 4chan: " + e.getMessage()));
+            }
+        });
+    }
+
+    private void renderCatalogSlice(final String board, final List<JSONObject> all, final int offset) {
+        int end = Math.min(offset + 18, all.size());
+        List<String> origTexts = new ArrayList<>();
+        List<TextView> textViews = new ArrayList<>();
+
+        for (int i = offset; i < end; i++) {
+            JSONObject th = all.get(i);
+            LinearLayout card = ui.card();
+            final long no = th.optLong("no");
+            int rep = th.optInt("replies", 0);
+            int imgs = th.optInt("images", 0);
+            final String sub = cleanHtmlText(th.optString("sub", ""));
+            final String com = cleanHtmlText(th.optString("com", ""));
+            final String prev = com.length() > 180 ? com.substring(0, 180) + "..." : com;
+
+            ui.addBody(card, "No." + no + "  •  💬 " + rep + "  •  🖼 " + imgs, 10.5f, "#94A3B8");
+            final TextView tvSub = !sub.isEmpty() ? ui.addBody(card, sub, 14f, "#4ADE80") : null;
+            if (tvSub != null) {
+                tvSub.setTypeface(null, Typeface.BOLD);
+                origTexts.add(sub);
+                textViews.add(tvSub);
+            }
+            final TextView tvCom = !prev.isEmpty() ? ui.addBody(card, format4chanSpans(prev), 12.5f, "#E2E8F0") : null;
+            if (tvCom != null) {
+                origTexts.add(prev);
+                textViews.add(tvCom);
+            }
+
+            if (!app.autoTranslateIt && (tvSub != null || tvCom != null)) {
+                final Button trOne = ui.pill("🌐 Traduci in IT", "#172033", "#1E293B", "#0284C7", "#38BDF8");
+                trOne.setOnClickListener(v -> {
+                    trOne.setText("Traduzione..."); trOne.setEnabled(false);
+                    net.transPool.execute(() -> {
+                        final String trS = tvSub != null ? net.translateIt(sub) : "";
+                        final String trC = tvCom != null ? net.translateIt(prev) : "";
+                        app.runOnUiThread(() -> {
+                            if (tvSub != null && !trS.isEmpty()) tvSub.setText(trS);
+                            if (tvCom != null && !trC.isEmpty()) tvCom.setText(format4chanSpans(trC));
+                            card.removeView(trOne);
+                        });
+                    });
+                });
+                card.addView(trOne);
+            }
+
+            long tim = th.optLong("tim", 0);
+            if (tim > 0) {
+                app.addSmartImage(card, "https://i.4cdn.org/" + board + "/" + tim + "s.jpg", 280, "🖼 Anteprima OP");
             }
             final String titleForNav = !sub.isEmpty() ? sub : ("Thread #" + no);
             ui.addPill(card, "Apri Thread (" + (rep + 1) + " post)", "#1B2332", "#263145", "#334155", "#4ADE80", v ->
@@ -178,9 +417,26 @@ public class FourChanView {
                     if (posts.length() == 0) { ui.addBody(ui.contentBox, "Thread vuoto o archiviato.", 13f, "#E2E8F0"); return; }
 
                     JSONObject op = posts.optJSONObject(0);
-                    String opSub = cleanHtmlText(op.optString("sub", fallbackSub));
-                    ui.addTitle(opSub.isEmpty() ? ("/" + board + "/ #" + threadNo) : opSub, "#4ADE80");
+                    final String opSub = cleanHtmlText(op != null ? op.optString("sub", fallbackSub) : fallbackSub);
+                    final String displayTitle = opSub.isEmpty() ? ("/" + board + "/ #" + threadNo) : opSub;
+
+                    final TextView tvTitle = ui.addBody(ui.contentBox, displayTitle, 17f, "#4ADE80");
+                    tvTitle.setTypeface(null, Typeface.BOLD);
+                    tvTitle.setGravity(Gravity.CENTER);
+                    if (app.autoTranslateIt && !opSub.isEmpty()) {
+                        net.transPool.execute(() -> {
+                            if (gen != net.transGen) return;
+                            final String trT = net.translateIt(opSub);
+                            if (gen == net.transGen && !trT.equals(opSub)) app.runOnUiThread(() -> tvTitle.setText(trT));
+                        });
+                    }
                     ui.addSub(posts.length() + " post nel thread");
+
+                    ui.addPill(ui.contentBox, app.autoTranslateIt ? "🌐 Traduzione IT: ATTIVA" : "🌐 Traduci tutto in IT",
+                            app.autoTranslateIt ? "#0284C7" : "#172033", "#0369A1", "#0284C7", "#FFFFFF", v -> {
+                                app.toggleAutoTranslate();
+                                loadThread(board, threadNo, fallbackSub, false);
+                            });
 
                     final String bmId = "4chan_" + board + "_" + threadNo;
                     boolean saved = app.store.isBookmarked(bmId);
@@ -190,10 +446,10 @@ public class FourChanView {
                         StringBuilder dump = new StringBuilder();
                         for (int k = 0; k < Math.min(posts.length(), 40); k++) {
                             JSONObject p = posts.optJSONObject(k);
-                            dump.append("No.").append(p.optLong("no")).append(": ")
-                                .append(cleanHtmlText(p.optString("com", ""))).append("\n\n");
+                            if (p != null) dump.append("No.").append(p.optLong("no")).append(": ")
+                                    .append(cleanHtmlText(p.optString("com", ""))).append("\n\n");
                         }
-                        app.store.toggleBookmark(bmId, "4chan", opSub.isEmpty() ? ("/" + board + "/ #" + threadNo) : opSub,
+                        app.store.toggleBookmark(bmId, "4chan", tvTitle.getText().toString(),
                                 "/" + board + "/", "https://boards.4chan.org/" + board + "/thread/" + threadNo, dump.toString());
                         boolean now = app.store.isBookmarked(bmId);
                         bmBtn.setText(now ? "★ Salvato offline" : "☆ Salva thread offline");
@@ -201,7 +457,8 @@ public class FourChanView {
                     ui.contentBox.addView(bmBtn);
 
                     for (int i = 0; i < posts.length(); i++) {
-                        JSONObject pObj = posts.optJSONObject(i); if (pObj != null) renderPostCard(board, pObj, i == 0, gen);
+                        JSONObject pObj = posts.optJSONObject(i);
+                        if (pObj != null) renderPostCard(board, pObj, i == 0, gen);
                     }
                 });
             } catch (Throwable e) {
@@ -246,6 +503,16 @@ public class FourChanView {
                         app.runOnUiThread(() -> tv.setText(format4chanSpans(tr)));
                     }
                 });
+            } else {
+                final Button trPost = ui.pill("🌐 Traduci post", "#172033", "#1E293B", "#0284C7", "#38BDF8");
+                trPost.setOnClickListener(v -> {
+                    trPost.setText("..."); trPost.setEnabled(false);
+                    net.transPool.execute(() -> {
+                        final String tr = net.translateIt(comText);
+                        app.runOnUiThread(() -> { tv.setText(format4chanSpans(tr)); box.removeView(trPost); });
+                    });
+                });
+                box.addView(trPost);
             }
         }
         ui.contentBox.addView(box);

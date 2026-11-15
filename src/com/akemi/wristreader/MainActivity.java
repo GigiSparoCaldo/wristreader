@@ -38,6 +38,9 @@ public class MainActivity extends Activity {
     private final ExecutorService pool = Executors.newFixedThreadPool(3);
     private final List<UiHelper.NavEntry> backStack = new ArrayList<>();
     private long lastBackPressMs = 0L;
+    private float touchStartX = 0f;
+    private float touchStartY = 0f;
+    private boolean swipeTriggered = false;
 
     public boolean imagesOnTap = true;
     public boolean autoTranslateIt = true;
@@ -59,9 +62,42 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ui != null) {
+            int action = ev.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                touchStartX = ev.getX();
+                touchStartY = ev.getY();
+                swipeTriggered = false;
+            } else if (action == MotionEvent.ACTION_MOVE && !swipeTriggered) {
+                float dx = ev.getX() - touchStartX;
+                float dy = ev.getY() - touchStartY;
+                if (Math.abs(dx) > ui.dp(62) && Math.abs(dx) > Math.abs(dy) * 1.65f) {
+                    swipeTriggered = true;
+                    MotionEvent cancel = MotionEvent.obtain(ev);
+                    cancel.setAction(MotionEvent.ACTION_CANCEL);
+                    super.dispatchTouchEvent(cancel);
+                    cancel.recycle();
+                    onBackPressed();
+                    return true;
+                }
+            } else if (action == MotionEvent.ACTION_UP && swipeTriggered) {
+                swipeTriggered = false;
+                return true;
+            }
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @Override
     public boolean dispatchGenericMotionEvent(MotionEvent ev) {
         if (ui != null && ui.handleRotary(ev)) return true;
         return super.dispatchGenericMotionEvent(ev);
+    }
+
+    public void toggleAutoTranslate() {
+        autoTranslateIt = !autoTranslateIt;
+        getSharedPreferences("wrist_prefs", MODE_PRIVATE).edit().putBoolean("auto_translate_it", autoTranslateIt).apply();
     }
 
     @Override

@@ -43,7 +43,8 @@ import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 public class NetHelper {
-    public static final String UA_REDDIT = "Android:com.akemi.wristreader:v2.1 (by /u/WristReaderApp)";
+    public static final String UA_REDDIT = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
+    public static final String UA_FEED = "Mozilla/5.0 (compatible; WristReader/2.2; +https://github.com/GigiSparoCaldo/wristreader)";
     public static final String UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
     public interface StatusCallback { void onStatus(String msg); }
@@ -285,8 +286,16 @@ public class NetHelper {
         if (text == null || text.trim().isEmpty()) return text;
         String cached = transCache.get(text);
         if (cached != null) return cached;
+        String prefix = "";
+        String bodyToTr = text;
+        Matcher qm = Pattern.compile("^((?:>>\\d+\\s*)+)(.*)$", Pattern.DOTALL).matcher(text);
+        if (qm.matches()) {
+            prefix = qm.group(1);
+            bodyToTr = qm.group(2).trim();
+        }
+        if (bodyToTr.isEmpty()) return text;
         try {
-            String trimmed = text.length() > maxLen ? text.substring(0, maxLen) : text;
+            String trimmed = bodyToTr.length() > maxLen ? bodyToTr.substring(0, maxLen) : bodyToTr;
             String resp = post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=it&dt=t",
                     "q=" + URLEncoder.encode(trimmed, "UTF-8"), UA_WEB, timeoutMs);
             JSONArray root = new JSONArray(resp);
@@ -298,7 +307,7 @@ public class NetHelper {
                 if (seg != null && !seg.isNull(0)) sb.append(seg.getString(0));
             }
             String tr = sb.toString().trim();
-            if (!tr.isEmpty()) { transCache.put(text, tr); return tr; }
+            if (!tr.isEmpty()) { String full = (prefix + tr).trim(); transCache.put(text, full); return full; }
         } catch (Exception ignored) {}
         return text;
     }
