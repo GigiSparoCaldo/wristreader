@@ -1,15 +1,12 @@
 package com.akemi.wristreader;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
-import android.media.MediaPlayer;
-import android.net.Uri;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.InputDevice;
@@ -25,6 +22,12 @@ import android.widget.MediaController;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.VideoView;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 public class UiHelper {
     public final Activity act;
@@ -33,6 +36,7 @@ public class UiHelper {
     public final LinearLayout contentBox;
     public final FrameLayout mediaOverlay;
     private VideoView videoView;
+    private volatile int videoGen = 0;
     public float fontScale;
     public final float density;
     public final int screenWidthPx;
@@ -96,6 +100,7 @@ public class UiHelper {
     public boolean isOverlayVisible() { return mediaOverlay.getVisibility() == View.VISIBLE; }
 
     public void closeOverlay() {
+        videoGen++;
         try {
             if (videoView != null) { videoView.stopPlayback(); videoView = null; }
         } catch (Exception ignored) {}
@@ -115,45 +120,91 @@ public class UiHelper {
         mediaOverlay.setVisibility(View.VISIBLE);
     }
 
-    public void playVideo(final String rawUrl) {
+    public void playVideo(final String rawUrl, final NetHelper net) {
+        final int gen = ++videoGen;
         mediaOverlay.removeAllViews();
         mediaOverlay.setVisibility(View.VISIBLE);
-        final String optUrl = rawUrl.replaceAll("DASH_(1080|720|480)\\.mp4", "DASH_360.mp4");
 
-        videoView = new VideoView(act);
-        videoView.setLayoutParams(new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
-        MediaController mc = new MediaController(act);
-        mc.setAnchorView(videoView);
-        videoView.setMediaController(mc);
-
-        videoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-            boolean tried = false;
-            @Override
-            public boolean onError(MediaPlayer mp, int what, int extra) {
-                if (!tried && !optUrl.equals(rawUrl)) {
-                    tried = true;
-                    videoView.setVideoURI(Uri.parse(rawUrl));
-                    videoView.start();
-                    return true;
-                }
-                closeOverlay();
-                new AlertDialog.Builder(act).setMessage("Video non supportato.").setPositiveButton("OK", null).show();
-                return true;
-            }
-        });
+        final TextView statusTv = new TextView(act);
+        statusTv.setText("Scaricamento video...");
+        statusTv.setTextColor(Color.parseColor("#38BDF8"));
+        statusTv.setTextSize(sp(13f));
+        statusTv.setGravity(Gravity.CENTER);
+        statusTv.setPadding(dp(24), 0, dp(24), 0);
+        mediaOverlay.addView(statusTv, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
 
         Button closeBtn = chip("✕ Chiudi", "#CC0F172A", "#1E293B", "#475569", "#FFFFFF");
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         blp.topMargin = dp(22);
         closeBtn.setOnClickListener(v -> closeOverlay());
-
-        mediaOverlay.addView(videoView);
         mediaOverlay.addView(closeBtn, blp);
-        java.util.Map<String, String> h = new java.util.HashMap<>(); h.put("User-Agent", NetHelper.UA_WEB); videoView.setVideoURI(Uri.parse(optUrl.split("\\?")[0]), h);
-        videoView.requestFocus();
-        videoView.start();
+
+        new Thread(() -> {
+            Set<String> candidates = new LinkedHashSet<>();
+            String clean = rawUrl.split("\\?")[0];
+            if (clean.contains("v.redd.it")) {
+                candidates.add(clean.replaceAll("(?:DASH|CMAF)_\\d+\\.mp4", "DASH_360.mp4"));
+                candidates.add(clean.replaceAll("(?:DASH|CMAF)_\\d+\\.mp4", "CMAF_360.mp4"));
+                candidates.add(clean.replaceAll("(?:DASH|CMAF)_\\d+\\.mp4", "DASH_240.mp4"));
+                candidates.add(clean.replaceAll("(?:DASH|CMAF)_\\d+\\.mp4", "CMAF_240.mp4"));
+            }
+            candidates.add(rawUrl);
+
+            byte[] videoBytes = null;
+            String lastErr = "Nessun formato MP4 trovato";
+            for (String cand : candidates) {
+                if (gen != videoGen) return;
+                try {
+                    byte[] data = net.getBytes(cand, NetHelper.UA_WEB);
+                    if (data != null && data.length > 4096) {
+                        videoBytes = data;
+                        break;
+                    }
+                } catch (Exception e) {
+                    lastErr = e.getMessage();
+                }
+            }
+
+            if (gen != videoGen) return;
+            if (videoBytes == null) {
+                final String err = lastErr;
+                act.runOnUiThread(() -> {
+                    if (gen == videoGen) statusTv.setText("Video non disponibile:\n" + err);
+                });
+                return;
+            }
+
+            try {
+                final File outFile = new File(act.getCacheDir(), "wrist_vid.mp4");
+                try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                    fos.write(videoBytes);
+                }
+                act.runOnUiThread(() -> {
+                    if (gen != videoGen) return;
+                    mediaOverlay.removeView(statusTv);
+                    videoView = new VideoView(act);
+                    videoView.setLayoutParams(new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER));
+                    MediaController mc = new MediaController(act);
+                    mc.setAnchorView(videoView);
+                    videoView.setMediaController(mc);
+                    videoView.setOnErrorListener((mp, what, extra) -> {
+                        closeOverlay();
+                        return true;
+                    });
+                    mediaOverlay.addView(videoView, 0);
+                    videoView.setVideoPath(outFile.getAbsolutePath());
+                    videoView.requestFocus();
+                    videoView.start();
+                });
+            } catch (final Exception e) {
+                act.runOnUiThread(() -> {
+                    if (gen == videoGen) statusTv.setText("Errore salvataggio video: " + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     public Drawable roundBox(String fillHex, String strokeHex, int radiusDp) {
@@ -191,7 +242,8 @@ public class UiHelper {
         Button b = new Button(act);
         b.setText(text);
         b.setAllCaps(false);
-        b.setTextSize(sp(10.5f)); b.setSingleLine(true);
+        b.setTextSize(sp(10.5f));
+        b.setSingleLine(true);
         b.setTypeface(null, Typeface.BOLD);
         b.setTextColor(Color.parseColor(textHex));
         b.setBackground(pillDrawable(normalHex, pressedHex, strokeHex, 999));

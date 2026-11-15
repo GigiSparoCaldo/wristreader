@@ -399,7 +399,7 @@ public class MainActivity extends Activity {
                 }
             } else if (m.group(4) != null) {
                 final String vs = net.resolveUrl(pageUrl, m.group(4));
-                if (vs != null) { ui.addPill(ui.contentBox, "▶ Riproduci Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vs)); count++; }
+                if (vs != null) { ui.addPill(ui.contentBox, "▶ Riproduci Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vs, net)); count++; }
             }
         }
 

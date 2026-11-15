@@ -208,7 +208,7 @@ public class NetHelper {
             HttpURLConnection c = openConnection(cur, ua, cb);
             if (cur.contains(".json")) c.setRequestProperty("Accept", "application/json");
             else c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
-            c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
+            if (cur.contains("google.com")) c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
             int code = c.getResponseCode();
             if (code >= 300 && code < 400) {
                 String loc = c.getHeaderField("Location"); c.disconnect();
@@ -399,6 +399,10 @@ public class NetHelper {
 
     public List<RssEntry> parseRss(String xml) throws Exception {
         List<RssEntry> list = new ArrayList<>();
+        String trimmedLow = xml.trim().toLowerCase();
+        if (trimmedLow.startsWith("<!doctype html") || trimmedLow.startsWith("<html")) {
+            throw new Exception("Limite richieste Reddit (attendi 10s)");
+        }
         int first = xml.indexOf('<');
         if (first > 0) xml = xml.substring(first);
         XmlPullParserFactory f = XmlPullParserFactory.newInstance();
