@@ -338,69 +338,6 @@ public class RedditView {
         return fetchRedditViaDuckDuckGo("site:reddit.com/r/" + enc.replace("+", " OR site:reddit.com/r/"));
     }
 
-    private PageResult fetchPage(String enc, boolean isMulti, String mode, String after, boolean force, TextView loading) throws Exception {
-        PageResult pr = new PageResult();
-        String qAfter = (after != null && !after.isEmpty()) ? ("&after=" + URLEncoder.encode(after, "UTF-8")) : "";
-        String jsonPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode))
-                ? "/top.json?t=" + mode + "&limit=20&raw_json=1" + qAfter
-                : "new".equals(mode) ? "/new.json?limit=20&raw_json=1" + qAfter
-                : "rising".equals(mode) ? "/rising.json?limit=20&raw_json=1" + qAfter
-                : "random".equals(mode) ? "/top.json?t=week&limit=28&raw_json=1"
-                : "/hot.json?limit=18&raw_json=1" + qAfter;
-
-        String[][] jsonEndpoints = {
-            {"https://www.reddit.com/r/" + enc + jsonPath, NetHelper.UA_WEB},
-            {"https://old.reddit.com/r/" + enc + jsonPath, NetHelper.UA_REDDIT},
-            {"https://api.reddit.com/r/" + enc + jsonPath.replace(".json", ""), NetHelper.UA_FEED}
-        };
-
-        for (String[] ep : jsonEndpoints) {
-            try {
-                String rawJson = net.getCached(ep[0], ep[1], force,
-                        loading != null ? (msg -> app.runOnUiThread(() -> loading.setText(msg))) : null).trim();
-                if (rawJson.startsWith("{")) {
-                    JSONObject data = new JSONObject(rawJson).getJSONObject("data");
-                    pr.after = data.optString("after", "");
-                    JSONArray children = data.getJSONArray("children");
-                    for (int i = 0; i < children.length(); i++) {
-                        JSONObject p = children.optJSONObject(i).optJSONObject("data");
-                        if (p != null) pr.posts.add(p);
-                    }
-                    return pr;
-                }
-            } catch (Exception ignored) {}
-        }
-
-        String rssPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode))
-                ? "/top.rss?t=" + mode + "&limit=22"
-                : "new".equals(mode) ? "/new.rss?limit=22"
-                : "rising".equals(mode) ? "/rising.rss?limit=22"
-                : "random".equals(mode) ? "/top.rss?t=week&limit=25" : "/hot.rss?limit=22";
-
-        for (String[] rep : new String[][]{
-                {"https://www.reddit.com/r/" + enc + rssPath, NetHelper.UA_FEED},
-                {"https://old.reddit.com/r/" + enc + rssPath, NetHelper.UA_WEB}}) {
-            try {
-                String xml = net.getCached(rep[0], rep[1], force,
-                        loading != null ? (msg -> app.runOnUiThread(() -> loading.setText(msg))) : null);
-                for (NetHelper.RssEntry it : net.parseRss(xml)) pr.posts.add(rssEntryToPostJson(it));
-                if (!pr.posts.isEmpty()) return pr;
-            } catch (Exception ignored) {}
-        }
-
-        if (isMulti) {
-            List<String> subs = app.store.getFollowedSubs();
-            for (int i = 0; i < Math.min(subs.size(), 4); i++) {
-                try {
-                    String subXml = net.getCached("https://www.reddit.com/r/" + subs.get(i) + rssPath, NetHelper.UA_FEED, force);
-                    for (NetHelper.RssEntry it : net.parseRss(subXml)) pr.posts.add(rssEntryToPostJson(it));
-                } catch (Exception ignored) {}
-            }
-            if (!pr.posts.isEmpty()) return pr;
-        }
-
-        return fetchRedditViaDuckDuckGo("site:reddit.com/r/" + enc.replace("+", " OR site:reddit.com/r/"));
-    }
 
     private JSONObject rssEntryToPostJson(NetHelper.RssEntry it) throws Exception {
         JSONObject obj = new JSONObject();
