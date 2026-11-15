@@ -360,7 +360,7 @@ public class UiHelper {
         contentBox.addView(tv);
     }
 
-    public TextView addBody(LinearLayout parent, String text, float baseSp, String hex) {
+    public TextView addBody(LinearLayout parent, CharSequence text, float baseSp, String hex) {
         TextView tv = new TextView(act);
         tv.setText(text);
         tv.setTextColor(Color.parseColor(hex));
