@@ -49,7 +49,7 @@ public class NetHelper {
     public interface StatusCallback { void onStatus(String msg); }
 
     public static class RssEntry {
-        public String title = "", link = "", summary = "", pubDate = "", imageUrl = "", author = "", rawHtml = "";
+        public String title = "", link = "", summary = "", pubDate = "", imageUrl = "", author = "", rawHtml = "", id = "", parentId = "";
     }
 
     public static class HttpRes {
@@ -411,12 +411,17 @@ public class NetHelper {
         xpp.setInput(new StringReader(xml));
         RssEntry cur = null;
         int ev = xpp.getEventType();
-        while (ev != XmlPullParser.END_DOCUMENT && list.size() < 30) {
+        while (ev != XmlPullParser.END_DOCUMENT && list.size() < 60) {
             String tag = xpp.getName() != null ? xpp.getName().toLowerCase() : "";
             if (ev == XmlPullParser.START_TAG) {
                 if ("item".equals(tag) || "entry".equals(tag)) cur = new RssEntry();
                 else if (cur != null) {
                     if ("title".equals(tag)) cur.title = stripHtml(safeText(xpp));
+                    else if ("id".equals(tag) && cur.id.isEmpty()) cur.id = safeText(xpp).trim();
+                    else if (tag.endsWith("in-reply-to")) {
+                        String ref = xpp.getAttributeValue(null, "ref");
+                        if (ref != null && !ref.isEmpty()) cur.parentId = ref.trim();
+                    }
                     else if ("name".equals(tag) && cur.author.isEmpty()) cur.author = safeText(xpp).replaceFirst("^/?u/", "").trim();
                     else if ("link".equals(tag)) {
                         String href = xpp.getAttributeValue(null, "href");
