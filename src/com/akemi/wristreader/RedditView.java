@@ -29,15 +29,20 @@ public class RedditView {
     private final NetHelper net;
     private final ExecutorService pool;
 
+    private static class PageResult {
+        final List<JSONObject> posts = new ArrayList<>();
+        String after = "";
+    }
+
     public RedditView(MainActivity app, UiHelper ui, NetHelper net, ExecutorService pool) {
         this.app = app; this.ui = ui; this.net = net; this.pool = pool;
     }
 
     public void loadFollowed(final String mode, final boolean force) {
-        List<String> list = app.getFollowed();
+        List<String> list = app.store.getFollowedSubs();
         if (list.isEmpty()) {
             ui.clear();
-            ui.addNavBar(app::onBackPressed, () -> { app.cycleFont(); loadFollowed(mode, false); }, () -> loadFollowed(mode, true));
+            ui.addNavBar(app::onBackPressed, () -> app.cycleFontInPlace(), () -> loadFollowed(mode, true));
             ui.addTitle("Nessuna pagina seguita", "#F97316");
             ui.addBody(ui.contentBox, "Torna nella Home, scrivi r/nomepagina nella barra in alto e tocca '+ Segui'.", 13f, "#E2E8F0");
             return;
@@ -47,76 +52,112 @@ public class RedditView {
         loadFeed(sb.toString(), true, mode, force);
     }
 
+    public void searchReddit(final String query, final boolean force) {
+        ui.clear();
+        ui.addNavBar(app::onBackPressed, () -> app.cycleFontInPlace(), () -> searchReddit(query, true));
+        ui.addTitle("Reddit: " + query, "#FB923C");
+        final TextView loading = ui.addBody(ui.contentBox, "Ricerca community e post...", 13f, "#E2E8F0");
+
+        pool.execute(() -> {
+            try {
+                String qEnc = URLEncoder.encode(query, "UTF-8");
+                final List<JSONObject> subs = new ArrayList<>();
+                try {
+                    String sJson = net.getCached("https://api.reddit.com/subreddits/search?q=" + qEnc + "&limit=6&raw_json=1", NetHelper.UA_REDDIT, force).trim();
+                    if (sJson.startsWith("{")) {
+                        JSONArray ch = new JSONObject(sJson).getJSONObject("data").getJSONArray("children");
+                        for (int i = 0; i < ch.length(); i++) subs.add(ch.getJSONObject(i).getJSONObject("data"));
+                    }
+                } catch (Exception ignored) {}
+
+                final PageResult pr = new PageResult();
+                try {
+                    String pJson = net.getCached("https://api.reddit.com/search?q=" + qEnc + "&sort=relevance&t=year&limit=18&raw_json=1", NetHelper.UA_REDDIT, force).trim();
+                    if (pJson.startsWith("{")) {
+                        JSONObject d = new JSONObject(pJson).getJSONObject("data");
+                        pr.after = d.optString("after", "");
+                        JSONArray ch = d.getJSONArray("children");
+                        for (int i = 0; i < ch.length(); i++) pr.posts.add(ch.getJSONObject(i).getJSONObject("data"));
+                    }
+                } catch (Exception ignored) {}
+
+                if (pr.posts.isEmpty()) {
+                    String xml = net.getCached("https://www.reddit.com/search.rss?q=" + qEnc + "&limit=18", NetHelper.UA_REDDIT, force);
+                    for (NetHelper.RssEntry it : net.parseRss(xml)) pr.posts.add(rssEntryToPostJson(it));
+                }
+
+                app.runOnUiThread(() -> {
+                    ui.contentBox.removeView(loading);
+                    if (!subs.isEmpty()) {
+                        ui.addSection("COMMUNITY TROVATE");
+                        for (JSONObject s : subs) {
+                            final String sName = s.optString("display_name", "");
+                            int members = s.optInt("subscribers", 0);
+                            if (!sName.isEmpty()) {
+                                ui.addPill(ui.contentBox, "r/" + sName + (members > 0 ? " (" + (members / 1000) + "k)" : ""),
+                                        "#141923", "#1E2634", "#EA580C", "#FDBA74",
+                                        v -> app.navigateTo(() -> loadFeed(sName, false, "hot", false)));
+                            }
+                        }
+                    }
+                    ui.addSection("POST TROVATI");
+                    if (pr.posts.isEmpty()) { ui.addBody(ui.contentBox, "Nessun post trovato.", 13f, "#E2E8F0"); return; }
+                    appendPostsAndMore(query, true, "search", pr);
+                });
+            } catch (Throwable e) {
+                app.runOnUiThread(() -> loading.setText("Errore ricerca Reddit: " + e.getMessage()));
+            }
+        });
+    }
+
     public void loadFeed(final String subOrMulti, final boolean isMulti, final String mode, final boolean force) {
         ui.clear();
-        ui.addNavBar(app::onBackPressed,
-                () -> { app.cycleFont(); loadFeed(subOrMulti, isMulti, mode, false); },
-                () -> loadFeed(subOrMulti, isMulti, mode, true));
+        ui.addNavBar(app::onBackPressed, () -> app.cycleFontInPlace(), () -> loadFeed(subOrMulti, isMulti, mode, true));
 
         String modeLabel = "random".equals(mode) ? "🎲 Casuale"
+                : "new".equals(mode) ? "🆕 Nuovi"
+                : "rising".equals(mode) ? "🚀 In Ascesa"
                 : "day".equals(mode) ? "🔥 Top 24h"
                 : "week".equals(mode) ? "📅 Top 7gg"
-                : "month".equals(mode) ? "🗓️ Top 30gg" : "🔥 Popolari";
+                : "month".equals(mode) ? "🗓️ Top 30gg"
+                : "year".equals(mode) ? "🏅 Top 1 Anno"
+                : "all".equals(mode) ? "👑 Top Sempre" : "🔥 Popolari (Hot)";
 
         ui.addTitle(isMulti ? "Miei Seguiti" : ("r/" + subOrMulti), "#FB923C");
         ui.addSub(modeLabel);
 
         if (!isMulti) {
-            boolean fol = app.isFollowed(subOrMulti);
+            boolean fol = app.store.isSubFollowed(subOrMulti);
             ui.addPill(ui.contentBox, fol ? "✓ Seguito" : "+ Segui r/" + subOrMulti,
                     fol ? "#132A22" : "#15803D", fol ? "#1B3B2F" : "#166534",
                     fol ? "#10B981" : null, fol ? "#34D399" : "#FFFFFF", v -> {
-                        app.toggleFollow(subOrMulti);
+                        app.store.toggleSub(subOrMulti);
                         loadFeed(subOrMulti, false, mode, false);
                     });
         }
 
-        LinearLayout sortRow = new LinearLayout(app);
-        sortRow.setOrientation(LinearLayout.HORIZONTAL);
-        sortRow.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams srLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        srLp.setMargins(0, ui.dp(4), 0, ui.dp(8));
-        sortRow.setLayoutParams(srLp);
-
-        String[][] filters = {{"🎲", "random"}, {"24h", "day"}, {"7gg", "week"}, {"30gg", "month"}};
-        for (int i = 0; i < filters.length; i++) {
-            final String fc = filters[i][1];
-            boolean act = fc.equals(mode);
-            Button sb = ui.chip(filters[i][0], act ? "#EA580C" : "#141923", act ? "#C2410C" : "#1F2736",
-                    act ? null : "#2A3447", act ? "#FFFFFF" : "#94A3B8");
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            if (i > 0) clp.leftMargin = ui.dp(4);
-            sb.setLayoutParams(clp);
-            sb.setOnClickListener(v -> loadFeed(subOrMulti, isMulti, fc, "random".equals(fc)));
-            sortRow.addView(sb);
-        }
-        ui.contentBox.addView(sortRow);
+        // Riga 1: Hot | Nuovi | Ascesa | Casuale
+        addFilterRow(subOrMulti, isMulti, mode, new String[][]{{"🔥Hot", "hot"}, {"🆕New", "new"}, {"🚀", "rising"}, {"🎲", "random"}});
+        // Riga 2: Top 24h | 7gg | 30gg | 1A | All
+        addFilterRow(subOrMulti, isMulti, mode, new String[][]{{"24h", "day"}, {"7gg", "week"}, {"30gg", "month"}, {"1A", "year"}, {"All", "all"}});
 
         final TextView loading = ui.addBody(ui.contentBox, "Caricamento post da Reddit...", 13f, "#E2E8F0");
 
         pool.execute(() -> {
             try {
                 String enc = URLEncoder.encode(subOrMulti, "UTF-8").replace("%2B", "+");
-                final List<JSONObject> posts = fetchRedditPosts(enc, isMulti, mode, force, loading);
+                final PageResult res = fetchPage(enc, isMulti, mode, "", force, loading);
                 if ("random".equals(mode)) {
-                    Collections.shuffle(posts);
-                    if (posts.size() > 16) posts.subList(16, posts.size()).clear();
+                    Collections.shuffle(res.posts);
+                    if (res.posts.size() > 16) res.posts.subList(16, res.posts.size()).clear();
                 }
                 app.runOnUiThread(() -> {
                     ui.contentBox.removeView(loading);
-                    if (posts.isEmpty()) {
-                        ui.addBody(ui.contentBox, "Nessun post in questo intervallo (prova 7gg o 30gg).", 13f, "#E2E8F0");
+                    if (res.posts.isEmpty()) {
+                        ui.addBody(ui.contentBox, "Nessun post in questo intervallo.", 13f, "#E2E8F0");
                         return;
                     }
-                    List<String> origTitles = new ArrayList<>();
-                    List<TextView> titleViews = new ArrayList<>();
-                    for (JSONObject p : posts) {
-                        String t = p.optString("title", "(Senza titolo)");
-                        origTitles.add(t);
-                        titleViews.add(renderCard(subOrMulti, isMulti, mode, p, t));
-                    }
-                    if (app.autoTranslateIt) net.translateTitlesAsync(origTitles, titleViews, app);
+                    appendPostsAndMore(subOrMulti, isMulti, mode, res);
                 });
             } catch (Throwable e) {
                 app.runOnUiThread(() -> loading.setText("Errore Reddit: " + e.getMessage()));
@@ -124,47 +165,122 @@ public class RedditView {
         });
     }
 
-    private List<JSONObject> fetchRedditPosts(String enc, boolean isMulti, String mode, boolean force, TextView loading) throws Exception {
-        String apiPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
-                ? "/top?t=" + mode + "&limit=20&raw_json=1"
-                : "random".equals(mode) ? "/top?t=week&limit=28&raw_json=1" : "/hot?limit=18&raw_json=1";
+    private void addFilterRow(final String subOrMulti, final boolean isMulti, final String activeMode, String[][] items) {
+        LinearLayout row = new LinearLayout(app);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.setMargins(0, ui.dp(2), 0, ui.dp(4));
+        row.setLayoutParams(rlp);
+
+        for (int i = 0; i < items.length; i++) {
+            final String fc = items[i][1];
+            boolean act = fc.equals(activeMode);
+            Button sb = ui.chip(items[i][0], act ? "#EA580C" : "#141923", act ? "#C2410C" : "#1F2736",
+                    act ? null : "#2A3447", act ? "#FFFFFF" : "#94A3B8");
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) clp.leftMargin = ui.dp(3);
+            sb.setLayoutParams(clp);
+            sb.setOnClickListener(v -> loadFeed(subOrMulti, isMulti, fc, "random".equals(fc)));
+            row.addView(sb);
+        }
+        ui.contentBox.addView(row);
+    }
+
+    private void appendPostsAndMore(final String subOrMulti, final boolean isMulti, final String mode, final PageResult res) {
+        List<String> origTitles = new ArrayList<>();
+        List<TextView> titleViews = new ArrayList<>();
+        for (JSONObject p : res.posts) {
+            String t = p.optString("title", "(Senza titolo)");
+            origTitles.add(t);
+            titleViews.add(renderCard(subOrMulti, isMulti, mode, p, t));
+        }
+        if (app.autoTranslateIt) net.translateTitlesAsync(origTitles, titleViews, app);
+
+        if (res.after != null && !res.after.isEmpty() && !"null".equals(res.after) && !"random".equals(mode)) {
+            final Button moreBtn = ui.pill("Carica altri post ↓", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
+            moreBtn.setOnClickListener(v -> {
+                moreBtn.setText("Caricamento...");
+                moreBtn.setEnabled(false);
+                pool.execute(() -> {
+                    try {
+                        String enc = URLEncoder.encode(subOrMulti, "UTF-8").replace("%2B", "+");
+                        final PageResult next = "search".equals(mode)
+                                ? fetchSearchPage(enc, res.after)
+                                : fetchPage(enc, isMulti, mode, res.after, false, null);
+                        app.runOnUiThread(() -> {
+                            ui.contentBox.removeView(moreBtn);
+                            if (!next.posts.isEmpty()) appendPostsAndMore(subOrMulti, isMulti, mode, next);
+                        });
+                    } catch (Exception e) {
+                        app.runOnUiThread(() -> { moreBtn.setText("Riprova ↓"); moreBtn.setEnabled(true); });
+                    }
+                });
+            });
+            ui.contentBox.addView(moreBtn);
+        }
+    }
+
+    private PageResult fetchSearchPage(String qEnc, String after) throws Exception {
+        PageResult pr = new PageResult();
+        String url = "https://api.reddit.com/search?q=" + qEnc + "&sort=relevance&t=year&limit=18&raw_json=1&after=" + URLEncoder.encode(after, "UTF-8");
+        String raw = net.getCached(url, NetHelper.UA_REDDIT, false).trim();
+        if (raw.startsWith("{")) {
+            JSONObject d = new JSONObject(raw).getJSONObject("data");
+            pr.after = d.optString("after", "");
+            JSONArray ch = d.getJSONArray("children");
+            for (int i = 0; i < ch.length(); i++) pr.posts.add(ch.getJSONObject(i).getJSONObject("data"));
+        }
+        return pr;
+    }
+
+    private PageResult fetchPage(String enc, boolean isMulti, String mode, String after, boolean force, TextView loading) throws Exception {
+        PageResult pr = new PageResult();
+        String qAfter = (after != null && !after.isEmpty()) ? ("&after=" + URLEncoder.encode(after, "UTF-8")) : "";
+        String apiPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode))
+                ? "/top?t=" + mode + "&limit=20&raw_json=1" + qAfter
+                : "new".equals(mode) ? "/new?limit=20&raw_json=1" + qAfter
+                : "rising".equals(mode) ? "/rising?limit=20&raw_json=1" + qAfter
+                : "random".equals(mode) ? "/top?t=week&limit=28&raw_json=1"
+                : "/hot?limit=18&raw_json=1" + qAfter;
 
         try {
             String rawJson = net.getCached("https://api.reddit.com/r/" + enc + apiPath, NetHelper.UA_REDDIT, force,
-                    msg -> app.runOnUiThread(() -> loading.setText(msg))).trim();
+                    loading != null ? (msg -> app.runOnUiThread(() -> loading.setText(msg))) : null).trim();
             if (rawJson.startsWith("{")) {
-                JSONArray children = new JSONObject(rawJson).getJSONObject("data").getJSONArray("children");
-                List<JSONObject> posts = new ArrayList<>();
+                JSONObject data = new JSONObject(rawJson).getJSONObject("data");
+                pr.after = data.optString("after", "");
+                JSONArray children = data.getJSONArray("children");
                 for (int i = 0; i < children.length(); i++) {
                     JSONObject p = children.optJSONObject(i).optJSONObject("data");
-                    if (p != null) posts.add(p);
+                    if (p != null) pr.posts.add(p);
                 }
-                return posts;
+                return pr;
             }
         } catch (Exception ignored) {}
 
-        String rssPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode))
+        String rssPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode))
                 ? "/top.rss?t=" + mode + "&limit=22"
+                : "new".equals(mode) ? "/new.rss?limit=22"
+                : "rising".equals(mode) ? "/rising.rss?limit=22"
                 : "random".equals(mode) ? "/top.rss?t=week&limit=25" : "/hot.rss?limit=22";
 
         try {
             String xml = net.getCached("https://www.reddit.com/r/" + enc + rssPath, NetHelper.UA_REDDIT, force,
-                    msg -> app.runOnUiThread(() -> loading.setText(msg)));
-            List<NetHelper.RssEntry> entries = net.parseRss(xml);
-            List<JSONObject> fallback = new ArrayList<>();
-            for (NetHelper.RssEntry it : entries) fallback.add(rssEntryToPostJson(it));
-            return fallback;
+                    loading != null ? (msg -> app.runOnUiThread(() -> loading.setText(msg))) : null);
+            for (NetHelper.RssEntry it : net.parseRss(xml)) pr.posts.add(rssEntryToPostJson(it));
+            return pr;
         } catch (Exception rssErr) {
             if (isMulti) {
-                List<JSONObject> merged = new ArrayList<>();
-                List<String> subs = app.getFollowed();
+                List<String> subs = app.store.getFollowedSubs();
                 for (int i = 0; i < Math.min(subs.size(), 3); i++) {
                     try {
                         String subXml = net.getCached("https://www.reddit.com/r/" + subs.get(i) + rssPath, NetHelper.UA_REDDIT, force);
-                        for (NetHelper.RssEntry it : net.parseRss(subXml)) merged.add(rssEntryToPostJson(it));
+                        for (NetHelper.RssEntry it : net.parseRss(subXml)) pr.posts.add(rssEntryToPostJson(it));
                     } catch (Exception ignored) {}
                 }
-                if (!merged.isEmpty()) return merged;
+                if (!pr.posts.isEmpty()) return pr;
             }
             throw rssErr;
         }
@@ -174,8 +290,7 @@ public class RedditView {
         JSONObject obj = new JSONObject();
         obj.put("title", it.title);
         obj.put("author", it.author.isEmpty() ? "reddit" : it.author);
-        obj.put("score", -1);
-        obj.put("num_comments", -1);
+        obj.put("score", -1); obj.put("num_comments", -1);
         String perm = it.link.replaceFirst("^https?://[^/]+", "");
         obj.put("permalink", perm);
         Matcher subM = Pattern.compile("/r/([^/]+)/").matcher(perm);
@@ -196,11 +311,9 @@ public class RedditView {
                 if (extUrl.isEmpty()) extUrl = h;
             }
         }
-
         JSONArray imgArr = new JSONArray();
         for (String im : imgSet) imgArr.put(im);
-        obj.put("_imgs", imgArr);
-        obj.put("_vid", vidUrl);
+        obj.put("_imgs", imgArr); obj.put("_vid", vidUrl);
         obj.put("url", !extUrl.isEmpty() ? extUrl : it.link);
         obj.put("is_self", extUrl.isEmpty());
         return obj;
@@ -217,15 +330,9 @@ public class RedditView {
         Set<String> set = new LinkedHashSet<>();
         if (rawHtml == null || rawHtml.isEmpty()) return new ArrayList<>();
         Matcher mImg = Pattern.compile("(?i)<img[^>]+src=[\"']([^\"']+)[\"']").matcher(rawHtml);
-        while (mImg.find()) {
-            String u = mImg.group(1).replace("&amp;", "&");
-            if (isValidPhotoUrl(u)) set.add(u);
-        }
+        while (mImg.find()) { String u = mImg.group(1).replace("&amp;", "&"); if (isValidPhotoUrl(u)) set.add(u); }
         Matcher mHref = Pattern.compile("(?i)<a[^>]+href=[\"']([^\"']+)[\"']").matcher(rawHtml);
-        while (mHref.find()) {
-            String h = mHref.group(1).replace("&amp;", "&");
-            if (isValidPhotoUrl(h)) set.add(h);
-        }
+        while (mHref.find()) { String h = mHref.group(1).replace("&amp;", "&"); if (isValidPhotoUrl(h)) set.add(h); }
         return new ArrayList<>(set);
     }
 
@@ -237,16 +344,26 @@ public class RedditView {
                 || low.contains("i.redd.it/") || low.contains("preview.redd.it/") || low.contains("i.imgur.com/");
     }
 
+    private String timeAgo(long createdUtc) {
+        if (createdUtc <= 0) return "";
+        long diff = Math.max(0, (System.currentTimeMillis() / 1000L) - createdUtc);
+        if (diff < 3600) return (diff / 60) + "m fa";
+        if (diff < 86400) return (diff / 3600) + "h fa";
+        return (diff / 86400) + "g fa";
+    }
+
     private TextView renderCard(final String subOrMulti, final boolean isMulti, final String mode,
                                 JSONObject post, final String shownTitle) {
         LinearLayout card = ui.card();
         String postSub = post.optString("subreddit", "");
         String author = post.optString("author", "?");
+        String flair = post.optString("link_flair_text", "").trim();
         int score = post.optInt("score", -1);
         int numComm = post.optInt("num_comments", -1);
         final String permalink = "https://www.reddit.com" + post.optString("permalink", "");
         String selfText = post.optString("selftext", "");
         final String postUrl = post.optString("url", "");
+        String ago = timeAgo(post.optLong("created_utc", 0));
 
         if (isMulti && !postSub.isEmpty()) {
             TextView badge = new TextView(app);
@@ -263,28 +380,20 @@ public class RedditView {
             card.addView(badge);
         }
 
-        String metaStr = score >= 0 ? ("u/" + author + "  •  ▲ " + score + "  •  💬 " + numComm) : ("u/" + author);
+        String metaStr = score >= 0
+                ? ("u/" + author + (ago.isEmpty() ? "" : " • " + ago) + "\n▲ " + score + "  •  💬 " + numComm)
+                : ("u/" + author);
         ui.addBody(card, metaStr, 10.5f, "#94A3B8");
+        if (!flair.isEmpty() && !"null".equals(flair)) {
+            ui.addBody(card, "[" + flair + "]", 10f, "#38BDF8");
+        }
         final TextView tvTitle = ui.addBody(card, shownTitle, 14f, "#F8FAFC");
         tvTitle.setTypeface(null, Typeface.BOLD);
 
-        if (!app.autoTranslateIt) {
-            final Button trBtn = ui.pill("🌐 Traduci in IT", "#172033", "#1E293B", "#0284C7", "#38BDF8");
-            trBtn.setOnClickListener(v -> {
-                trBtn.setText("..."); trBtn.setEnabled(false);
-                net.transPool.execute(() -> {
-                    final String tr = net.translateIt(shownTitle);
-                    app.runOnUiThread(() -> { tvTitle.setText(tr); card.removeView(trBtn); });
-                });
-            });
-            card.addView(trBtn);
-        }
-
         String vid = extractVideo(post);
         List<String> imgs = extractImages(post);
-        if (imgs.size() == 1) {
-            app.addSmartImage(card, imgs.get(0), 340, "🖼 Carica foto");
-        } else if (imgs.size() > 1) {
+        if (imgs.size() == 1) app.addSmartImage(card, imgs.get(0), 340, "🖼 Carica foto");
+        else if (imgs.size() > 1) {
             for (int idx = 0; idx < Math.min(imgs.size(), 6); idx++) {
                 app.addSmartImage(card, imgs.get(idx), 340, "🖼 Foto " + (idx + 1) + "/" + imgs.size());
             }
@@ -298,24 +407,38 @@ public class RedditView {
         }
         if (!post.optBoolean("is_self", false) && vid == null && imgs.isEmpty()
                 && !postUrl.contains("i.redd.it") && !postUrl.contains("reddit.com") && postUrl.startsWith("http")) {
-            ui.addPill(card, "Leggi articolo web ↗", "#0284C7", "#0369A1", null, "#FFFFFF", v ->
-                    app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false),
-                            () -> app.loadSmartUrl(postUrl, false, shownTitle, selfText)));
+            ui.addPill(card, "Leggi articolo web ↗", "#0284C7", "#0369A1", null, "#FFFFFF",
+                    v -> app.navigateTo(() -> app.loadSmartUrl(postUrl, false, shownTitle, selfText)));
         }
         String openLabel = numComm >= 0 ? ("Apri Post & Commenti (" + numComm + ")") : "Apri Post & Commenti";
-        ui.addPill(card, openLabel, "#1B2332", "#263145", "#334155", "#38BDF8", v ->
-                app.navigateTo(() -> loadFeed(subOrMulti, isMulti, mode, false),
-                        () -> loadComments(permalink, tvTitle.getText().toString(), false)));
+        ui.addPill(card, openLabel, "#1B2332", "#263145", "#334155", "#38BDF8",
+                v -> app.navigateTo(() -> loadComments(permalink, tvTitle.getText().toString(), "best", false)));
 
         ui.contentBox.addView(card);
         return tvTitle;
     }
 
-    public void loadComments(final String permalink, final String fallbackTitle, final boolean force) {
+    public void loadComments(final String permalink, final String fallbackTitle, final String sort, final boolean force) {
         ui.clear();
-        ui.addNavBar(app::onBackPressed,
-                () -> { app.cycleFont(); loadComments(permalink, fallbackTitle, false); },
-                () -> loadComments(permalink, fallbackTitle, true));
+        ui.addNavBar(app::onBackPressed, () -> app.cycleFontInPlace(), () -> loadComments(permalink, fallbackTitle, sort, true));
+
+        LinearLayout sortRow = new LinearLayout(app);
+        sortRow.setOrientation(LinearLayout.HORIZONTAL);
+        sortRow.setGravity(Gravity.CENTER);
+        String[][] cSorts = {{"Top", "top"}, {"Migliori", "best"}, {"Nuovi", "new"}, {"Contr.", "controversial"}};
+        for (int i = 0; i < cSorts.length; i++) {
+            final String cs = cSorts[i][1];
+            boolean act = cs.equals(sort);
+            Button sb = ui.chip(cSorts[i][0], act ? "#0284C7" : "#141923", act ? "#0369A1" : "#1F2736",
+                    act ? null : "#2A3447", act ? "#FFFFFF" : "#94A3B8");
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) clp.leftMargin = ui.dp(3);
+            sb.setLayoutParams(clp);
+            sb.setOnClickListener(v -> loadComments(permalink, fallbackTitle, cs, false));
+            sortRow.addView(sb);
+        }
+        ui.contentBox.addView(sortRow);
+
         final TextView loading = ui.addBody(ui.contentBox, "Caricamento post e commenti...", 13f, "#E2E8F0");
         final int gen = net.nextTransGen();
 
@@ -323,15 +446,10 @@ public class RedditView {
             try {
                 String cleanPath = permalink.replaceFirst("^https?://[^/]+", "").split("\\?")[0].replaceAll("/$", "");
                 String raw = null;
-                for (String host : new String[]{"https://api.reddit.com", "https://www.reddit.com"}) {
-                    try {
-                        String u = host.contains("api.")
-                                ? (host + cleanPath + "?limit=60&depth=6&raw_json=1")
-                                : (host + cleanPath + ".json?limit=60&depth=6&raw_json=1");
-                        String candidate = net.getCached(u, NetHelper.UA_REDDIT, force).trim();
-                        if (candidate.startsWith("[")) { raw = candidate; break; }
-                    } catch (Exception ignored) {}
-                }
+                try {
+                    String candidate = net.getCached("https://api.reddit.com" + cleanPath + "?limit=60&depth=6&sort=" + sort + "&raw_json=1", NetHelper.UA_REDDIT, force).trim();
+                    if (candidate.startsWith("[")) raw = candidate;
+                } catch (Exception ignored) {}
 
                 if (raw != null) {
                     JSONArray arr = new JSONArray(raw);
@@ -339,7 +457,7 @@ public class RedditView {
                     JSONArray commentsArr = arr.getJSONObject(1).getJSONObject("data").getJSONArray("children");
                     renderFullPostHeader(postData, fallbackTitle, gen, loading);
                     app.runOnUiThread(() -> {
-                        ui.addSection("COMMENTI");
+                        ui.addSection("COMMENTI (" + sort.toUpperCase() + ")");
                         renderTree(commentsArr, 0, gen);
                     });
                 } else {
@@ -350,20 +468,15 @@ public class RedditView {
                     renderFullPostHeader(postData, fallbackTitle, gen, loading);
 
                     final Map<String, NetHelper.RssEntry> byId = new HashMap<>();
-                    for (int i = 1; i < entries.size(); i++) {
-                        if (!entries.get(i).id.isEmpty()) byId.put(entries.get(i).id, entries.get(i));
-                    }
+                    for (int i = 1; i < entries.size(); i++) if (!entries.get(i).id.isEmpty()) byId.put(entries.get(i).id, entries.get(i));
                     final Map<String, List<NetHelper.RssEntry>> childrenMap = new HashMap<>();
                     final List<NetHelper.RssEntry> roots = new ArrayList<>();
                     for (int i = 1; i < entries.size(); i++) {
                         NetHelper.RssEntry ce = entries.get(i);
                         if (!ce.parentId.isEmpty() && byId.containsKey(ce.parentId)) {
                             childrenMap.computeIfAbsent(ce.parentId, k -> new ArrayList<>()).add(ce);
-                        } else {
-                            roots.add(ce);
-                        }
+                        } else roots.add(ce);
                     }
-
                     app.runOnUiThread(() -> {
                         ui.addSection("COMMENTI (" + Math.max(0, entries.size() - 1) + ")");
                         renderRssTree(roots, childrenMap, 0, gen);
@@ -386,7 +499,6 @@ public class RedditView {
                 String auth = !ce.author.isEmpty() ? ("u/" + ce.author) : ce.title;
                 TextView head = ui.addBody(box, (depth > 0 ? "↳ " : "") + auth, 10.5f, depth > 0 ? "#7DD3FC" : "#38BDF8");
                 head.setTypeface(null, Typeface.BOLD);
-
                 if (!orig.isEmpty()) {
                     final TextView tv = ui.addBody(box, orig, 12.5f, "#E2E8F0");
                     if (app.autoTranslateIt) {
@@ -397,14 +509,10 @@ public class RedditView {
                         });
                     }
                 }
-                for (String im : imgs) {
-                    app.addSmartImage(box, im, 280, "🖼 Foto commento");
-                }
+                for (String im : imgs) app.addSmartImage(box, im, 280, "🖼 Foto commento");
                 ui.contentBox.addView(box);
             }
-            if (!ce.id.isEmpty() && childrenMap.containsKey(ce.id)) {
-                renderRssTree(childrenMap.get(ce.id), childrenMap, depth + 1, gen);
-            }
+            if (!ce.id.isEmpty() && childrenMap.containsKey(ce.id)) renderRssTree(childrenMap.get(ce.id), childrenMap, depth + 1, gen);
         }
     }
 
@@ -412,6 +520,8 @@ public class RedditView {
         final String rawT = postData.optString("title", fallbackTitle);
         final String rawS = postData.optString("selftext", "");
         final String extUrl = postData.optString("url", "");
+        final String perm = postData.optString("permalink", "");
+        final String sub = postData.optString("subreddit", "reddit");
         final boolean isSelf = postData.optBoolean("is_self", true);
         final List<String> imgs = extractImages(postData);
         final String vid = extractVideo(postData);
@@ -431,6 +541,17 @@ public class RedditView {
             int sc = postData.optInt("score", -1);
             ui.addSub(sc >= 0 ? ("u/" + postData.optString("author", "?") + " • ▲ " + sc) : ("u/" + postData.optString("author", "?")));
 
+            final String bmId = "reddit_" + perm;
+            boolean saved = app.store.isBookmarked(bmId);
+            final Button bmBtn = ui.pill(saved ? "★ Salvato offline" : "☆ Salva post offline",
+                    "#141923", "#1E2634", saved ? "#F59E0B" : "#334155", saved ? "#FBBF24" : "#CBD5E1");
+            bmBtn.setOnClickListener(v -> {
+                app.store.toggleBookmark(bmId, "reddit", tvHead.getText().toString(), "r/" + sub, "https://www.reddit.com" + perm, rawS);
+                boolean now = app.store.isBookmarked(bmId);
+                bmBtn.setText(now ? "★ Salvato offline" : "☆ Salva post offline");
+            });
+            ui.contentBox.addView(bmBtn);
+
             for (int k = 0; k < Math.min(imgs.size(), 8); k++) {
                 app.addSmartImage(ui.contentBox, imgs.get(k), 420,
                         imgs.size() > 1 ? ("🖼 Foto " + (k + 1) + "/" + imgs.size()) : "🖼 Carica foto");
@@ -449,9 +570,8 @@ public class RedditView {
                 }
             }
             if (!isSelf && extUrl.startsWith("http") && !extUrl.contains("reddit.com") && !extUrl.contains("i.redd.it")) {
-                ui.addPill(ui.contentBox, "Leggi articolo collegato ↗", "#0284C7", "#0369A1", null, "#FFFFFF", v ->
-                        app.navigateTo(() -> loadComments(postData.optString("permalink", ""), rawT, false),
-                                () -> app.loadSmartUrl(extUrl, false, rawT, rawS)));
+                ui.addPill(ui.contentBox, "Leggi articolo collegato ↗", "#0284C7", "#0369A1", null, "#FFFFFF",
+                        v -> app.navigateTo(() -> app.loadSmartUrl(extUrl, false, rawT, rawS)));
             }
         });
     }
@@ -469,7 +589,9 @@ public class RedditView {
 
             LinearLayout box = depth == 0 ? ui.card() : ui.subCard();
             box.setPadding(ui.dp(12) + Math.min(depth * ui.dp(8), ui.dp(32)), ui.dp(10), ui.dp(12), ui.dp(10));
-            TextView head = ui.addBody(box, (depth > 0 ? "↳ " : "") + "u/" + c.optString("author", "?") + " • ▲ " + c.optInt("score", 0), 10.5f, depth > 0 ? "#7DD3FC" : "#38BDF8");
+            String opTag = c.optBoolean("is_submitter", false) ? " [OP]" : "";
+            TextView head = ui.addBody(box, (depth > 0 ? "↳ " : "") + "u/" + c.optString("author", "?") + opTag + " • ▲ " + c.optInt("score", 0),
+                    10.5f, c.optBoolean("is_submitter", false) ? "#4ADE80" : (depth > 0 ? "#7DD3FC" : "#38BDF8"));
             head.setTypeface(null, Typeface.BOLD);
 
             if (!orig.isEmpty()) {
@@ -482,9 +604,7 @@ public class RedditView {
                     });
                 }
             }
-            for (String im : commentImgs) {
-                app.addSmartImage(box, im, 280, "🖼 Foto commento");
-            }
+            for (String im : commentImgs) app.addSmartImage(box, im, 280, "🖼 Foto commento");
             ui.contentBox.addView(box);
 
             Object rep = c.opt("replies");
@@ -501,11 +621,7 @@ public class RedditView {
                 while (keys.hasNext()) {
                     JSONObject mObj = meta.optJSONObject(keys.next());
                     if (mObj == null) continue;
-                    String u = "";
-                    if (mObj.has("s")) {
-                        JSONObject sObj = mObj.getJSONObject("s");
-                        u = sObj.optString("u", sObj.optString("gif", ""));
-                    }
+                    String u = mObj.has("s") ? mObj.getJSONObject("s").optString("u", mObj.getJSONObject("s").optString("gif", "")) : "";
                     if (u.isEmpty() && mObj.has("p")) {
                         JSONArray pArr = mObj.getJSONArray("p");
                         if (pArr.length() > 0) u = pArr.getJSONObject(pArr.length() - 1).optString("u", "");
@@ -514,7 +630,6 @@ public class RedditView {
                 }
             }
         } catch (Exception ignored) {}
-
         String combined = body + " " + Html.fromHtml(c.optString("body_html", ""), Html.FROM_HTML_MODE_LEGACY);
         Matcher m = Pattern.compile("(https?://[^\\s\"'<>]+)", Pattern.CASE_INSENSITIVE).matcher(combined);
         while (m.find()) {
@@ -550,10 +665,7 @@ public class RedditView {
         List<String> list = new ArrayList<>();
         JSONArray preImgs = post.optJSONArray("_imgs");
         if (preImgs != null && preImgs.length() > 0) {
-            for (int i = 0; i < preImgs.length(); i++) {
-                String s = preImgs.optString(i, "");
-                if (!s.isEmpty()) list.add(s);
-            }
+            for (int i = 0; i < preImgs.length(); i++) { String s = preImgs.optString(i, ""); if (!s.isEmpty()) list.add(s); }
             if (!list.isEmpty()) return list;
         }
         try {
@@ -591,6 +703,8 @@ public class RedditView {
                     if (!pu.isEmpty()) { list.add(pu.replace("&amp;", "&")); return list; }
                 }
             }
+            JSONArray cross = post.optJSONArray("crosspost_parent_list");
+            if (cross != null && cross.length() > 0) return extractImages(cross.getJSONObject(0));
         } catch (Exception ignored) {}
         String th = post.optString("thumbnail", "");
         if (th.startsWith("http")) list.add(th);

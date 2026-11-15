@@ -182,6 +182,8 @@ public class NetHelper {
         c.setRequestProperty("User-Agent", ua);
         c.setRequestProperty("Accept-Language", "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7");
         if (useIp) c.setRequestProperty("Host", host);
+        if (host != null && host.contains("4cdn.org")) c.setRequestProperty("Referer", "https://boards.4chan.org/");
+        if (host != null && host.contains("4cdn.org")) c.setRequestProperty("Referer", "https://boards.4chan.org/");
         if (c instanceof HttpsURLConnection && host != null && !host.isEmpty()) {
             HttpsURLConnection hc = (HttpsURLConnection) c;
             hc.setSSLSocketFactory(new SniSslSocketFactory(host));

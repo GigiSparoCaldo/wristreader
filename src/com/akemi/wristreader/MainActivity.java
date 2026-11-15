@@ -16,24 +16,28 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class MainActivity extends Activity {
     private UiHelper ui;
     private NetHelper net;
+    public StorageHelper store;
     private RedditView reddit;
+    private FourChanView fourChan;
     private final ExecutorService pool = Executors.newFixedThreadPool(3);
-    private final List<Runnable> backStack = new ArrayList<>();
+    private final List<UiHelper.NavEntry> backStack = new ArrayList<>();
+    private long lastBackPressMs = 0L;
 
     public boolean imagesOnTap = true;
     public boolean autoTranslateIt = true;
@@ -41,6 +45,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        store = new StorageHelper(this);
         SharedPreferences p = getSharedPreferences("wrist_prefs", MODE_PRIVATE);
         imagesOnTap = p.getBoolean("images_on_tap", true);
         autoTranslateIt = p.getBoolean("auto_translate_it", true);
@@ -49,6 +54,7 @@ public class MainActivity extends Activity {
         ui = new UiHelper(this, scale);
         net = new NetHelper();
         reddit = new RedditView(this, ui, net, pool);
+        fourChan = new FourChanView(this, ui, net, pool);
         showHome();
     }
 
@@ -61,8 +67,18 @@ public class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         if (ui != null && ui.isOverlayVisible()) { ui.closeOverlay(); return; }
-        if (!backStack.isEmpty()) { backStack.remove(backStack.size() - 1).run(); return; }
-        super.onBackPressed();
+        if (!backStack.isEmpty()) {
+            UiHelper.NavEntry prev = backStack.remove(backStack.size() - 1);
+            ui.restoreState(prev);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastBackPressMs > 2500L) {
+            lastBackPressMs = now;
+            Toast.makeText(this, "Premi ancora Indietro per chiudere", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        finish();
     }
 
     @Override
@@ -72,17 +88,19 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    public void navigateTo(Runnable restore, Runnable next) {
-        if (restore != null) backStack.add(restore);
+    public void navigateTo(Runnable next) {
+        backStack.add(ui.captureState());
         next.run();
     }
 
-    public void cycleFont() {
+    public void cycleFontInPlace() {
+        float oldScale = ui.fontScale;
         if (ui.fontScale < 0.95f) ui.fontScale = 1.0f;
         else if (ui.fontScale < 1.15f) ui.fontScale = 1.20f;
         else if (ui.fontScale < 1.35f) ui.fontScale = 1.40f;
         else ui.fontScale = 0.85f;
         getSharedPreferences("wrist_prefs", MODE_PRIVATE).edit().putFloat("font_scale", ui.fontScale).apply();
+        ui.rescaleText(ui.contentBox, ui.fontScale / oldScale);
     }
 
     private String fontLabel() {
@@ -92,42 +110,13 @@ public class MainActivity extends Activity {
         return "Extra (XL)";
     }
 
-    public List<String> getFollowed() {
-        String raw = getSharedPreferences("wrist_prefs", MODE_PRIVATE).getString("followed_subs", "italy,WearOS,technology,androiddev");
-        List<String> list = new ArrayList<>();
-        if (raw != null && !raw.trim().isEmpty()) {
-            for (String s : raw.split(",")) {
-                String c = s.trim().replaceFirst("^/?r/", "");
-                if (!c.isEmpty() && !list.contains(c)) list.add(c);
-            }
-        }
-        return list;
-    }
-
-    public boolean isFollowed(String sub) {
-        String t = sub.trim().replaceFirst("^/?r/", "");
-        for (String s : getFollowed()) if (s.equalsIgnoreCase(t)) return true;
-        return false;
-    }
-
-    public void toggleFollow(String sub) {
-        String t = sub.trim().replaceFirst("^/?r/", "");
-        Set<String> set = new LinkedHashSet<>(getFollowed());
-        String found = null;
-        for (String s : set) if (s.equalsIgnoreCase(t)) { found = s; break; }
-        if (found != null) set.remove(found); else set.add(t);
-        StringBuilder sb = new StringBuilder();
-        for (String s : set) { if (sb.length() > 0) sb.append(","); sb.append(s); }
-        getSharedPreferences("wrist_prefs", MODE_PRIVATE).edit().putString("followed_subs", sb.toString()).apply();
-    }
-
     private void showHome() {
         ui.clear();
         ui.addTitle("WristReader", "#38BDF8");
-        ui.addSub("Reddit • Google News • Web");
+        ui.addSub("Reddit • 4chan • News • Web");
 
         final EditText input = new EditText(this);
-        input.setHint("r/pagina, link o cerca...");
+        input.setHint("r/sub, /g/, link o cerca...");
         input.setHintTextColor(Color.parseColor("#64748B"));
         input.setTextColor(Color.WHITE);
         input.setTextSize(ui.sp(13f));
@@ -141,64 +130,124 @@ public class MainActivity extends Activity {
         input.setLayoutParams(ilp);
         ui.contentBox.addView(input);
 
-        ui.addPill(ui.contentBox, "Apri / Cerca", "#0284C7", "#0369A1", null, "#FFFFFF", v -> {
+        ui.addPill(ui.contentBox, "Apri / Cerca Web", "#0284C7", "#0369A1", null, "#FFFFFF", v -> {
             String q = input.getText().toString().trim();
             if (q.isEmpty()) return;
-            if (q.startsWith("r/") || q.startsWith("/r/")) {
+            if (q.matches("^/?[a-z0-9]{1,6}/?$") && !q.contains(".")) {
+                navigateTo(() -> fourChan.loadBoard(q, "bump", false));
+            } else if (q.contains("4chan.org/") || q.contains("4channel.org/")) {
+                Matcher tm = Pattern.compile("4chan(?:nel)?\\.org/([^/]+)/thread/(\\d+)").matcher(q);
+                if (tm.find()) {
+                    final String b = tm.group(1); final long no = Long.parseLong(tm.group(2));
+                    navigateTo(() -> fourChan.loadThread(b, no, "", false));
+                } else {
+                    String b = q.replaceAll(".*4chan(?:nel)?\\.org/([^/]+).*", "$1");
+                    navigateTo(() -> fourChan.loadBoard(b, "bump", false));
+                }
+            } else if (q.startsWith("r/") || q.startsWith("/r/")) {
                 String sub = q.replaceFirst("^/?r/", "").trim();
-                navigateTo(this::showHome, () -> reddit.loadFeed(sub, false, "hot", false));
+                navigateTo(() -> reddit.loadFeed(sub, false, "hot", false));
             } else if (q.contains("reddit.com/r/")) {
-                if (q.endsWith(".rss") || q.contains(".rss?")) navigateTo(this::showHome, () -> loadSmartUrl(q, false));
-                else if (q.contains("/comments/")) navigateTo(this::showHome, () -> reddit.loadComments(q, "Post Reddit", false));
+                if (q.endsWith(".rss") || q.contains(".rss?")) navigateTo(() -> loadSmartUrl(q, false));
+                else if (q.contains("/comments/")) navigateTo(() -> reddit.loadComments(q, "Post Reddit", "best", false));
                 else {
                     String sub = q.replaceAll(".*reddit\\.com/r/([^/]+).*", "$1");
-                    navigateTo(this::showHome, () -> reddit.loadFeed(sub, false, "hot", false));
+                    navigateTo(() -> reddit.loadFeed(sub, false, "hot", false));
                 }
             } else if (q.startsWith("http://") || q.startsWith("https://") || (!q.contains(" ") && q.contains("."))) {
-                navigateTo(this::showHome, () -> loadSmartUrl(q.startsWith("http") ? q : "https://" + q, false));
+                navigateTo(() -> loadSmartUrl(q.startsWith("http") ? q : "https://" + q, false));
             } else {
-                navigateTo(this::showHome, () -> loadSearch(q, false));
+                navigateTo(() -> loadSearch(q, false));
             }
         });
 
-        ui.addPill(ui.contentBox, "Cerca su Google News", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC", v -> {
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams srLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        srLp.setMargins(0, ui.dp(2), 0, ui.dp(6));
+        searchRow.setLayoutParams(srLp);
+
+        Button bRedS = ui.chip("🔍 Reddit", "#291711", "#431F12", "#EA580C", "#FDBA74");
+        LinearLayout.LayoutParams lp1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp1.rightMargin = ui.dp(3);
+        bRedS.setLayoutParams(lp1);
+        bRedS.setOnClickListener(v -> {
             String q = input.getText().toString().trim();
-            if (q.isEmpty()) {
-                navigateTo(this::showHome, () -> loadRss("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it", "Google News Italia", false));
-            } else {
+            if (!q.isEmpty()) navigateTo(() -> reddit.searchReddit(q, false));
+        });
+        searchRow.addView(bRedS);
+
+        Button bNewsS = ui.chip("📰 G.News", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
+        LinearLayout.LayoutParams lp2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp2.leftMargin = ui.dp(3);
+        bNewsS.setLayoutParams(lp2);
+        bNewsS.setOnClickListener(v -> {
+            String q = input.getText().toString().trim();
+            if (q.isEmpty()) navigateTo(() -> loadRss("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it", "Google News Italia", false));
+            else {
                 try {
                     String gUrl = "https://news.google.com/rss/search?q=" + URLEncoder.encode(q, "UTF-8") + "&hl=it&gl=IT&ceid=IT:it";
-                    navigateTo(this::showHome, () -> loadRss(gUrl, "News: " + q, false));
+                    navigateTo(() -> loadRss(gUrl, "News: " + q, false));
                 } catch (Exception ignored) {}
             }
         });
+        searchRow.addView(bNewsS);
+        ui.contentBox.addView(searchRow);
 
         ui.addSection("IL MIO FEED REDDIT");
-        ui.addPill(ui.contentBox, "🎲 Casuale (Miei Seguiti)", "#EA580C", "#C2410C", null, "#FFFFFF", v ->
-                navigateTo(this::showHome, () -> reddit.loadFollowed("random", false)));
+        ui.addPill(ui.contentBox, "🎲 Casuale (Miei Seguiti)", "#EA580C", "#C2410C", null, "#FFFFFF",
+                v -> navigateTo(() -> reddit.loadFollowed("random", false)));
 
-        LinearLayout topRow = new LinearLayout(this);
-        topRow.setOrientation(LinearLayout.HORIZONTAL);
-        topRow.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams trLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        trLp.setMargins(0, ui.dp(4), 0, ui.dp(4));
-        topRow.setLayoutParams(trLp);
-
-        String[][] periods = {{"🔥 24h", "day"}, {"📅 7gg", "week"}, {"🗓️ 30gg", "month"}};
-        for (int i = 0; i < periods.length; i++) {
-            final String pc = periods[i][1];
-            Button pb = ui.chip(periods[i][0], "#26150E", "#431F12", "#9A3412", "#FDBA74");
+        LinearLayout rRow1 = new LinearLayout(this);
+        rRow1.setOrientation(LinearLayout.HORIZONTAL);
+        rRow1.setGravity(Gravity.CENTER);
+        String[][] m1 = {{"🔥Hot", "hot"}, {"🆕New", "new"}, {"🚀Ascesa", "rising"}};
+        for (int i = 0; i < m1.length; i++) {
+            final String mc = m1[i][1];
+            Button b = ui.chip(m1[i][0], "#26150E", "#431F12", "#9A3412", "#FDBA74");
             LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
             if (i > 0) clp.leftMargin = ui.dp(4);
-            pb.setLayoutParams(clp);
-            pb.setOnClickListener(v -> navigateTo(this::showHome, () -> reddit.loadFollowed(pc, false)));
-            topRow.addView(pb);
+            b.setLayoutParams(clp);
+            b.setOnClickListener(v -> navigateTo(() -> reddit.loadFollowed(mc, false)));
+            rRow1.addView(b);
         }
-        ui.contentBox.addView(topRow);
+        ui.contentBox.addView(rRow1);
 
-        ui.addSection("ASPETTO & RISPARMIO");
-        ui.addPill(ui.contentBox, "🔠 Testo: " + fontLabel(), "#141923", "#222B3A", "#334155", "#E2E8F0", v -> { cycleFont(); showHome(); });
+        LinearLayout rRow2 = new LinearLayout(this);
+        rRow2.setOrientation(LinearLayout.HORIZONTAL);
+        rRow2.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams r2Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        r2Lp.setMargins(0, ui.dp(4), 0, ui.dp(4));
+        rRow2.setLayoutParams(r2Lp);
+        String[][] m2 = {{"24h", "day"}, {"7gg", "week"}, {"30gg", "month"}, {"1A", "year"}, {"All", "all"}};
+        for (int i = 0; i < m2.length; i++) {
+            final String mc = m2[i][1];
+            Button b = ui.chip(m2[i][0], "#26150E", "#431F12", "#9A3412", "#FDBA74");
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) clp.leftMargin = ui.dp(3);
+            b.setLayoutParams(clp);
+            b.setOnClickListener(v -> navigateTo(() -> reddit.loadFollowed(mc, false)));
+            rRow2.addView(b);
+        }
+        ui.contentBox.addView(rRow2);
+
+        ui.addSection("4CHAN BOARDS");
+        for (final String b : store.getFollowedBoards()) {
+            ui.addPill(ui.contentBox, "/" + b + "/", "#111F18", "#182E23", "#15803D", "#4ADE80",
+                    v -> navigateTo(() -> fourChan.loadBoard(b, "bump", false)));
+        }
+
+        ui.addSection("SALVATI & IMPOSTAZIONI");
+        int bmCount = store.getBookmarks().length();
+        ui.addPill(ui.contentBox, "⭐ Salvati Offline (" + bmCount + ")", "#1F1A10", "#2E2616", "#D97706", "#FBBF24",
+                v -> navigateTo(this::showBookmarks));
+        ui.addPill(ui.contentBox, "🔠 Testo: " + fontLabel(), "#141923", "#222B3A", "#334155", "#E2E8F0", v -> {
+            cycleFontInPlace();
+            showHome();
+        });
         ui.addPill(ui.contentBox, autoTranslateIt ? "🌐 Traduzione IT: ATTIVA" : "🌐 Traduzione IT: SPENTA",
                 "#141923", "#222B3A", autoTranslateIt ? "#0284C7" : "#334155", autoTranslateIt ? "#38BDF8" : "#94A3B8", v -> {
                     autoTranslateIt = !autoTranslateIt;
@@ -212,34 +261,59 @@ public class MainActivity extends Activity {
                     showHome();
                 });
 
-        ui.addSection("PAGINE SEGUITE");
-        List<String> fol = getFollowed();
-        if (fol.isEmpty()) ui.addSub("Scrivi r/nome nella barra sopra per seguire.");
-        else for (final String s : fol) {
-            ui.addPill(ui.contentBox, "r/" + s, "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                    navigateTo(this::showHome, () -> reddit.loadFeed(s, false, "hot", false)));
+        ui.addSection("PAGINE REDDIT SEGUITE");
+        for (final String s : store.getFollowedSubs()) {
+            ui.addPill(ui.contentBox, "r/" + s, "#141923", "#1E2634", "#263042", "#F8FAFC",
+                    v -> navigateTo(() -> reddit.loadFeed(s, false, "hot", false)));
         }
 
         ui.addSection("NOTIZIE & RSS");
-        ui.addPill(ui.contentBox, "Google News Italia", "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                navigateTo(this::showHome, () -> loadRss("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it", "Google News Italia", false)));
-        ui.addPill(ui.contentBox, "Google News Tech", "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                navigateTo(this::showHome, () -> loadRss("https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=it&gl=IT&ceid=IT:it", "Google News Tech", false)));
-        ui.addPill(ui.contentBox, "ANSA Ultima Ora", "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                navigateTo(this::showHome, () -> loadRss("https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", "ANSA Top News", false)));
-        ui.addPill(ui.contentBox, "Il Post", "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                navigateTo(this::showHome, () -> loadRss("https://www.ilpost.it/feed/", "Il Post", false)));
+        ui.addPill(ui.contentBox, "Google News Italia", "#141923", "#1E2634", "#263042", "#F8FAFC",
+                v -> navigateTo(() -> loadRss("https://news.google.com/rss?hl=it&gl=IT&ceid=IT:it", "Google News Italia", false)));
+        ui.addPill(ui.contentBox, "Google News Tech", "#141923", "#1E2634", "#263042", "#F8FAFC",
+                v -> navigateTo(() -> loadRss("https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=it&gl=IT&ceid=IT:it", "Google News Tech", false)));
+        ui.addPill(ui.contentBox, "ANSA Ultima Ora", "#141923", "#1E2634", "#263042", "#F8FAFC",
+                v -> navigateTo(() -> loadRss("https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", "ANSA Top News", false)));
+        ui.addPill(ui.contentBox, "Il Post", "#141923", "#1E2634", "#263042", "#F8FAFC",
+                v -> navigateTo(() -> loadRss("https://www.ilpost.it/feed/", "Il Post", false)));
     }
 
-    public void loadSmartUrl(final String rawUrl, final boolean force) {
-        loadSmartUrl(rawUrl, force, "", "");
+    private void showBookmarks() {
+        ui.clear();
+        ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, null);
+        ui.addTitle("⭐ Salvati Offline", "#FBBF24");
+        JSONArray arr = store.getBookmarks();
+        if (arr.length() == 0) {
+            ui.addBody(ui.contentBox, "Nessun contenuto salvato. Usa il tasto '☆ Salva offline' dentro post, thread o articoli.", 13f, "#E2E8F0");
+            return;
+        }
+        for (int i = 0; i < arr.length(); i++) {
+            final JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            LinearLayout card = ui.card();
+            ui.addBody(card, o.optString("sub", "") + " • " + o.optString("type", "").toUpperCase(), 10.5f, "#FBBF24");
+            TextView tv = ui.addBody(card, o.optString("title", "(Salvato)"), 13.5f, "#F8FAFC");
+            tv.setTypeface(null, Typeface.BOLD);
+            ui.addPill(card, "Leggi Offline", "#0284C7", "#0369A1", null, "#FFFFFF", v -> navigateTo(() -> {
+                ui.clear();
+                ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, null);
+                ui.addTitle(o.optString("title", ""), "#38BDF8");
+                ui.addSub(o.optString("sub", ""));
+                ui.addBody(ui.contentBox, o.optString("body", ""), 13.5f, "#E2E8F0");
+            }));
+            ui.addPill(card, "Rimuovi", "#291711", "#431F12", "#9A3412", "#FCA5A5", v -> {
+                store.toggleBookmark(o.optString("id"), "", "", "", "", "");
+                showBookmarks();
+            });
+            ui.contentBox.addView(card);
+        }
     }
+
+    public void loadSmartUrl(final String rawUrl, final boolean force) { loadSmartUrl(rawUrl, force, "", ""); }
 
     public void loadSmartUrl(final String rawUrl, final boolean force, final String fbTitle, final String fbSummary) {
         ui.clear();
-        ui.addNavBar(this::onBackPressed,
-                () -> { cycleFont(); loadSmartUrl(rawUrl, false, fbTitle, fbSummary); },
-                () -> loadSmartUrl(rawUrl, true, fbTitle, fbSummary));
+        ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, () -> loadSmartUrl(rawUrl, true, fbTitle, fbSummary));
         final TextView loading = ui.addBody(ui.contentBox, "Sblocco link articolo...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
@@ -254,18 +328,14 @@ public class MainActivity extends Activity {
                     }
                 }
                 final String finalTarget = target;
-                String body = net.getCached(finalTarget, NetHelper.UA_WEB, force,
-                        msg -> runOnUiThread(() -> loading.setText(msg)));
+                String body = net.getCached(finalTarget, NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg)));
                 if (body.contains("combinando fonti di notizie") && !fbTitle.isEmpty()) {
                     String ddg = net.getCached("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(fbTitle, "UTF-8"), NetHelper.UA_WEB, false);
                     Matcher dm = Pattern.compile("<a[^>]+class=\"result__a\"[^>]+href=\"([^\"]+)\"").matcher(ddg);
                     while (dm.find()) {
                         String h = Html.fromHtml(dm.group(1), Html.FROM_HTML_MODE_LEGACY).toString();
                         if (h.contains("uddg=")) h = URLDecoder.decode(h.replaceAll(".*uddg=([^&]+).*", "$1"), "UTF-8");
-                        if (h.startsWith("http") && !h.contains("google.com")) {
-                            body = net.getCached(h, NetHelper.UA_WEB, force);
-                            break;
-                        }
+                        if (h.startsWith("http") && !h.contains("google.com")) { body = net.getCached(h, NetHelper.UA_WEB, force); break; }
                     }
                 }
                 final String finalBody = body;
@@ -289,15 +359,14 @@ public class MainActivity extends Activity {
 
     private void loadRss(final String url, final String title, final boolean force) {
         ui.clear();
-        ui.addNavBar(this::onBackPressed, () -> { cycleFont(); loadRss(url, title, false); }, () -> loadRss(url, title, true));
+        ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, () -> loadRss(url, title, true));
         ui.addTitle(title, "#38BDF8");
         final TextView loading = ui.addBody(ui.contentBox, "Avvio richiesta RSS...", 13f, "#E2E8F0");
         pool.execute(() -> {
             try {
                 String xml;
-                try {
-                    xml = net.getCached(url, NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg)));
-                } catch (Exception firstErr) {
+                try { xml = net.getCached(url, NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg))); }
+                catch (Exception firstErr) {
                     String host = new URL(url).getHost().replaceFirst("^www\\.", "");
                     String gFallback = "https://news.google.com/rss/search?q=site:" + URLEncoder.encode(host, "UTF-8") + "&hl=it&gl=IT&ceid=IT:it";
                     xml = net.getCached(gFallback, NetHelper.UA_WEB, force, msg -> runOnUiThread(() -> loading.setText(msg)));
@@ -305,7 +374,7 @@ public class MainActivity extends Activity {
                 final String finalXml = xml;
                 runOnUiThread(() -> { ui.contentBox.removeView(loading); renderRss(url, title, finalXml); });
             } catch (Throwable e) {
-                runOnUiThread(() -> loading.setText("Errore RSS (" + e.getClass().getSimpleName() + "): " + e.getMessage()));
+                runOnUiThread(() -> loading.setText("Errore RSS: " + e.getMessage()));
             }
         });
     }
@@ -322,9 +391,8 @@ public class MainActivity extends Activity {
                 if (!it.imageUrl.isEmpty()) addSmartImage(card, it.imageUrl, 300, "🖼 Carica foto");
                 if (!it.summary.isEmpty()) ui.addBody(card, it.summary.length() > 180 ? it.summary.substring(0, 180) + "..." : it.summary, 12f, "#CBD5E1");
                 if (!it.link.isEmpty()) {
-                    ui.addPill(card, "Leggi Articolo", "#0284C7", "#0369A1", null, "#FFFFFF", v ->
-                            navigateTo(() -> loadRss(feedUrl, feedTitle, false),
-                                    () -> loadSmartUrl(it.link, false, it.title, it.summary)));
+                    ui.addPill(card, "Leggi Articolo", "#0284C7", "#0369A1", null, "#FFFFFF",
+                            v -> navigateTo(() -> loadSmartUrl(it.link, false, it.title, it.summary)));
                 }
                 ui.contentBox.addView(card);
             }
@@ -335,7 +403,7 @@ public class MainActivity extends Activity {
 
     private void loadSearch(final String query, final boolean force) {
         ui.clear();
-        ui.addNavBar(this::onBackPressed, () -> { cycleFont(); loadSearch(query, false); }, () -> loadSearch(query, true));
+        ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, () -> loadSearch(query, true));
         ui.addTitle("Ricerca: " + query, "#38BDF8");
         final TextView loading = ui.addBody(ui.contentBox, "Ricerca sul web...", 13f, "#E2E8F0");
         pool.execute(() -> {
@@ -354,8 +422,8 @@ public class MainActivity extends Activity {
                     ui.contentBox.removeView(loading);
                     if (res.isEmpty()) { ui.addBody(ui.contentBox, "Nessun risultato.", 13f, "#E2E8F0"); return; }
                     for (final String[] r : res) {
-                        ui.addPill(ui.contentBox, r[0], "#141923", "#1E2634", "#263042", "#F8FAFC", v ->
-                                navigateTo(() -> loadSearch(query, false), () -> loadSmartUrl(r[1], false, r[0], "")));
+                        ui.addPill(ui.contentBox, r[0], "#141923", "#1E2634", "#263042", "#F8FAFC",
+                                v -> navigateTo(() -> loadSmartUrl(r[1], false, r[0], "")));
                     }
                 });
             } catch (Throwable e) {
@@ -369,16 +437,23 @@ public class MainActivity extends Activity {
         if (title.isEmpty() || title.equalsIgnoreCase("Google News")) title = fbTitle;
         if (!title.isEmpty()) ui.addTitle(title, "#38BDF8");
 
+        final String bmId = "web_" + pageUrl;
+        final String finalTitle = title;
+        final StringBuilder collected = new StringBuilder();
+        boolean saved = store.isBookmarked(bmId);
+        final Button bmBtn = ui.pill(saved ? "★ Articolo salvato" : "☆ Salva articolo offline",
+                "#141923", "#1E2634", saved ? "#F59E0B" : "#334155", saved ? "#FBBF24" : "#CBD5E1");
+        bmBtn.setOnClickListener(v -> {
+            store.toggleBookmark(bmId, "web", finalTitle, pageUrl, pageUrl, collected.toString());
+            boolean now = store.isBookmarked(bmId);
+            bmBtn.setText(now ? "★ Articolo salvato" : "☆ Salva articolo offline");
+        });
+        ui.contentBox.addView(bmBtn);
+
         String ogImg = "";
         Matcher mOgImg = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']").matcher(html);
         if (mOgImg.find()) ogImg = net.resolveUrl(pageUrl, mOgImg.group(1));
         if (ogImg != null && !ogImg.isEmpty()) addSmartImage(ui.contentBox, ogImg, 360, "🖼 Foto articolo");
-
-        String jsonBody = "";
-        Matcher mJsonBody = Pattern.compile("(?is)\"articleBody\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(html);
-        if (mJsonBody.find()) {
-            jsonBody = mJsonBody.group(1).replace("\\n", "\n").replace("\\\"", "\"").replace("\\/", "/").trim();
-        }
 
         String cleaned = html.replaceAll("(?is)<script.*?</script>", " ").replaceAll("(?is)<style.*?</style>", " ")
                 .replaceAll("(?is)<nav.*?</nav>", " ").replaceAll("(?is)<footer.*?</footer>", " ").replaceAll("(?is)<!--.*?-->", " ");
@@ -390,6 +465,7 @@ public class MainActivity extends Activity {
                 String tag = m.group(1).toLowerCase(), txt = net.stripHtml(m.group(2)).trim();
                 if (txt.length() >= 25 || tag.startsWith("h")) {
                     if (tag.startsWith("h")) ui.addSection(txt); else ui.addBody(ui.contentBox, txt, 13.5f, "#E2E8F0");
+                    collected.append(txt).append("\n\n");
                     count++;
                 }
             } else if (m.group(3) != null && imgs < 10) {
@@ -402,18 +478,9 @@ public class MainActivity extends Activity {
                 if (vs != null) { ui.addPill(ui.contentBox, "▶ Riproduci Video", "#EA580C", "#C2410C", null, "#FFFFFF", v -> ui.playVideo(vs, net)); count++; }
             }
         }
-
-        if (count < 2 && !jsonBody.isEmpty()) {
-            ui.addBody(ui.contentBox, jsonBody, 13.5f, "#E2E8F0");
-            count += 3;
-        }
-        if (count == 0) {
-            String ogDesc = "";
-            Matcher mDesc = Pattern.compile("(?is)<meta[^>]+(?:property|name)=[\"'](?:og:description|description)[\"'][^>]+content=[\"']([^\"']+)[\"']").matcher(html);
-            if (mDesc.find()) ogDesc = net.stripHtml(mDesc.group(1));
-            String best = !ogDesc.isEmpty() ? ogDesc : fbSummary;
-            if (!best.isEmpty()) ui.addBody(ui.contentBox, best, 13.5f, "#E2E8F0");
-            else ui.addSub("Contenuto protetto da JavaScript/Paywall (" + pageUrl + ")");
+        if (count == 0 && !fbSummary.isEmpty()) {
+            ui.addBody(ui.contentBox, fbSummary, 13.5f, "#E2E8F0");
+            collected.append(fbSummary);
         }
     }
 

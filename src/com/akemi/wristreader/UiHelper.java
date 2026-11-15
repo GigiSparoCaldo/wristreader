@@ -8,6 +8,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.util.DisplayMetrics;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.MotionEvent;
@@ -30,6 +31,15 @@ import java.util.List;
 import java.util.Set;
 
 public class UiHelper {
+    public static class NavEntry {
+        public final List<View> views = new ArrayList<>();
+        public final int scrollY;
+        public NavEntry(LinearLayout box, int scrollY) {
+            this.scrollY = scrollY;
+            for (int i = 0; i < box.getChildCount(); i++) views.add(box.getChildAt(i));
+        }
+    }
+
     public final Activity act;
     public final FrameLayout rootFrame;
     public final ScrollView scrollView;
@@ -85,6 +95,31 @@ public class UiHelper {
         scrollView.requestFocus();
     }
 
+    public NavEntry captureState() {
+        return new NavEntry(contentBox, scrollView.getScrollY());
+    }
+
+    public void restoreState(final NavEntry entry) {
+        contentBox.removeAllViews();
+        for (View v : entry.views) {
+            if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+            contentBox.addView(v);
+        }
+        scrollView.requestFocus();
+        scrollView.post(() -> scrollView.scrollTo(0, entry.scrollY));
+    }
+
+    public void rescaleText(View v, float ratio) {
+        if (v instanceof TextView) {
+            TextView tv = (TextView) v;
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, tv.getTextSize() * ratio);
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) v;
+            for (int i = 0; i < vg.getChildCount(); i++) rescaleText(vg.getChildAt(i), ratio);
+        }
+    }
+
     public boolean handleRotary(MotionEvent ev) {
         if (ev.getAction() == MotionEvent.ACTION_SCROLL && ev.isFromSource(InputDevice.SOURCE_ROTARY_ENCODER)) {
             if (mediaOverlay.getVisibility() != View.VISIBLE) {
@@ -101,9 +136,7 @@ public class UiHelper {
 
     public void closeOverlay() {
         videoGen++;
-        try {
-            if (videoView != null) { videoView.stopPlayback(); videoView = null; }
-        } catch (Exception ignored) {}
+        try { if (videoView != null) { videoView.stopPlayback(); videoView = null; } } catch (Exception ignored) {}
         mediaOverlay.removeAllViews();
         mediaOverlay.setVisibility(View.GONE);
         scrollView.requestFocus();
@@ -153,34 +186,26 @@ public class UiHelper {
             candidates.add(rawUrl);
 
             byte[] videoBytes = null;
-            String lastErr = "Nessun formato MP4 trovato";
+            String lastErr = "Nessun flusso video trovato";
             for (String cand : candidates) {
                 if (gen != videoGen) return;
                 try {
                     byte[] data = net.getBytes(cand, NetHelper.UA_WEB);
-                    if (data != null && data.length > 4096) {
-                        videoBytes = data;
-                        break;
-                    }
-                } catch (Exception e) {
-                    lastErr = e.getMessage();
-                }
+                    if (data != null && data.length > 4096) { videoBytes = data; break; }
+                } catch (Exception e) { lastErr = e.getMessage(); }
             }
 
             if (gen != videoGen) return;
             if (videoBytes == null) {
                 final String err = lastErr;
-                act.runOnUiThread(() -> {
-                    if (gen == videoGen) statusTv.setText("Video non disponibile:\n" + err);
-                });
+                act.runOnUiThread(() -> { if (gen == videoGen) statusTv.setText("Video non disponibile:\n" + err); });
                 return;
             }
 
             try {
-                final File outFile = new File(act.getCacheDir(), "wrist_vid.mp4");
-                try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                    fos.write(videoBytes);
-                }
+                String ext = clean.toLowerCase().endsWith(".webm") ? ".webm" : ".mp4";
+                final File outFile = new File(act.getCacheDir(), "wrist_vid" + ext);
+                try (FileOutputStream fos = new FileOutputStream(outFile)) { fos.write(videoBytes); }
                 act.runOnUiThread(() -> {
                     if (gen != videoGen) return;
                     mediaOverlay.removeView(statusTv);
@@ -190,19 +215,14 @@ public class UiHelper {
                     MediaController mc = new MediaController(act);
                     mc.setAnchorView(videoView);
                     videoView.setMediaController(mc);
-                    videoView.setOnErrorListener((mp, what, extra) -> {
-                        closeOverlay();
-                        return true;
-                    });
+                    videoView.setOnErrorListener((mp, what, extra) -> { closeOverlay(); return true; });
                     mediaOverlay.addView(videoView, 0);
                     videoView.setVideoPath(outFile.getAbsolutePath());
                     videoView.requestFocus();
                     videoView.start();
                 });
             } catch (final Exception e) {
-                act.runOnUiThread(() -> {
-                    if (gen == videoGen) statusTv.setText("Errore salvataggio video: " + e.getMessage());
-                });
+                act.runOnUiThread(() -> { if (gen == videoGen) statusTv.setText("Errore file video: " + e.getMessage()); });
             }
         }).start();
     }
@@ -300,10 +320,11 @@ public class UiHelper {
         bFont.setOnClickListener(v -> onFont.run());
         row.addView(bFont);
 
-        Button bRef = chip("↻", "#181E29", "#263042", "#2D3748", "#34D399");
-        bRef.setOnClickListener(v -> onRefresh.run());
-        row.addView(bRef);
-
+        if (onRefresh != null) {
+            Button bRef = chip("↻", "#181E29", "#263042", "#2D3748", "#34D399");
+            bRef.setOnClickListener(v -> onRefresh.run());
+            row.addView(bRef);
+        }
         contentBox.addView(row);
     }
 
