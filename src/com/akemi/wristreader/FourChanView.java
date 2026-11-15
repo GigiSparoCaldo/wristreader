@@ -201,7 +201,7 @@ public class FourChanView {
                     ui.contentBox.addView(bmBtn);
 
                     for (int i = 0; i < posts.length(); i++) {
-                        renderPostCard(board, posts.getJSONObject(i), i == 0, gen);
+                        JSONObject pObj = posts.optJSONObject(i); if (pObj != null) renderPostCard(board, pObj, i == 0, gen);
                     }
                 });
             } catch (Throwable e) {
