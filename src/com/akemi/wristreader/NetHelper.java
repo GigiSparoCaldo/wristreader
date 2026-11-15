@@ -44,10 +44,11 @@ import org.xmlpull.v1.XmlPullParserFactory;
 
 public class NetHelper {
     public static final String UA_REDDIT = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36";
-    public static final String UA_FEED = "Mozilla/5.0 (compatible; WristReader/2.2; +https://github.com/GigiSparoCaldo/wristreader)";
+    public static final String UA_FEED = "Mozilla/5.0 (compatible; WristReader/2.3; +https://github.com/GigiSparoCaldo/wristreader)";
     public static final String UA_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
     public interface StatusCallback { void onStatus(String msg); }
+    public interface TextFormatter { CharSequence format(String text); }
 
     public static class RssEntry {
         public String title = "", link = "", summary = "", pubDate = "", imageUrl = "", author = "", rawHtml = "", id = "", parentId = "";
@@ -114,11 +115,11 @@ public class NetHelper {
         }
     }
 
-    private final LruCache<String, String> textCache = new LruCache<>(35);
-    private final LruCache<String, String> transCache = new LruCache<>(250);
+    private final LruCache<String, String> textCache = new LruCache<>(45);
+    private final LruCache<String, String> transCache = new LruCache<>(300);
     private final ConcurrentHashMap<String, String> dnsCache = new ConcurrentHashMap<>();
     private final ExecutorService dnsPool = Executors.newCachedThreadPool();
-    public final ExecutorService transPool = Executors.newSingleThreadExecutor();
+    public final ExecutorService transPool = Executors.newFixedThreadPool(2);
     public volatile int transGen = 0;
 
     public int nextTransGen() { return ++transGen; }
@@ -183,7 +184,6 @@ public class NetHelper {
         c.setRequestProperty("User-Agent", ua);
         c.setRequestProperty("Accept-Language", "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7");
         if (useIp) c.setRequestProperty("Host", host);
-        if (host != null && host.contains("4cdn.org")) c.setRequestProperty("Referer", "https://boards.4chan.org/");
         if (host != null && host.contains("4cdn.org")) c.setRequestProperty("Referer", "https://boards.4chan.org/");
         if (c instanceof HttpsURLConnection && host != null && !host.isEmpty()) {
             HttpsURLConnection hc = (HttpsURLConnection) c;
@@ -251,12 +251,13 @@ public class NetHelper {
         String cur = urlStr;
         for (int i = 0; i < 5; i++) {
             HttpURLConnection c = openConnection(cur, ua, null);
-            if (c.getResponseCode() >= 300 && c.getResponseCode() < 400) {
+            int code = c.getResponseCode();
+            if (code >= 300 && code < 400) {
                 String loc = c.getHeaderField("Location"); c.disconnect();
                 if (loc == null) break;
                 cur = resolveUrl(cur, loc); continue;
             }
-            if (c.getResponseCode() >= 400) { c.disconnect(); throw new Exception("HTTP " + c.getResponseCode()); }
+            if (code >= 400) { c.disconnect(); throw new Exception("HTTP " + code); }
             try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buf = new byte[8192]; int n;
                 while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
@@ -280,24 +281,22 @@ public class NetHelper {
         return Html.fromHtml(noTags, Html.FROM_HTML_MODE_LEGACY).toString().replaceAll("\\s+", " ").trim();
     }
 
-    public String translateIt(String text) { return translateRaw(text, 1600, 5000); }
+    public String translateIt(String text) { return translateRaw(text, 1500, 5500); }
 
     private String translateRaw(String text, int maxLen, int timeoutMs) {
         if (text == null || text.trim().isEmpty()) return text;
         String cached = transCache.get(text);
         if (cached != null) return cached;
-        String prefix = "";
-        String bodyToTr = text;
+        String prefix = "", bodyToTr = text;
         Matcher qm = Pattern.compile("^((?:>>\\d+\\s*)+)(.*)$", Pattern.DOTALL).matcher(text);
-        if (qm.matches()) {
-            prefix = qm.group(1);
-            bodyToTr = qm.group(2).trim();
-        }
+        if (qm.matches()) { prefix = qm.group(1); bodyToTr = qm.group(2).trim(); }
         if (bodyToTr.isEmpty()) return text;
+
+        String trimmed = bodyToTr.length() > maxLen ? bodyToTr.substring(0, maxLen) : bodyToTr;
         try {
-            String trimmed = bodyToTr.length() > maxLen ? bodyToTr.substring(0, maxLen) : bodyToTr;
+            String encQ = URLEncoder.encode(trimmed, "UTF-8");
             String resp = post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=it&dt=t",
-                    "q=" + URLEncoder.encode(trimmed, "UTF-8"), UA_WEB, timeoutMs);
+                    "q=" + encQ, UA_WEB, timeoutMs);
             JSONArray root = new JSONArray(resp);
             if ("it".equalsIgnoreCase(root.optString(2, ""))) { transCache.put(text, text); return text; }
             JSONArray segs = root.getJSONArray(0);
@@ -309,10 +308,28 @@ public class NetHelper {
             String tr = sb.toString().trim();
             if (!tr.isEmpty()) { String full = (prefix + tr).trim(); transCache.put(text, full); return full; }
         } catch (Exception ignored) {}
+
+        try {
+            String encQ = URLEncoder.encode(trimmed.length() > 900 ? trimmed.substring(0, 900) : trimmed, "UTF-8");
+            String resp2 = getWithUrl("https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=it&q=" + encQ, UA_WEB).body;
+            JSONArray arr = new JSONArray(resp2);
+            String tr2 = "";
+            if (arr.length() > 0) {
+                Object first = arr.get(0);
+                if (first instanceof String) tr2 = (String) first;
+                else if (first instanceof JSONArray) tr2 = ((JSONArray) first).optString(0, "");
+            }
+            tr2 = tr2.trim();
+            if (!tr2.isEmpty()) { String full = (prefix + tr2).trim(); transCache.put(text, full); return full; }
+        } catch (Exception ignored) {}
         return text;
     }
 
     public void translateTitlesAsync(final List<String> titles, final List<TextView> views, final Activity act) {
+        translateTitlesAsync(titles, views, act, null);
+    }
+
+    public void translateTitlesAsync(final List<String> titles, final List<TextView> views, final Activity act, final TextFormatter fmt) {
         final int gen = nextTransGen();
         if (titles.isEmpty()) return;
         transPool.execute(() -> {
@@ -323,27 +340,46 @@ public class NetHelper {
                 final String orig = titles.get(i);
                 final TextView tv = views.get(i);
                 String c = transCache.get(orig);
-                if (c != null) { if (!c.equals(orig)) act.runOnUiThread(() -> tv.setText(c)); }
-                else if (!orig.trim().isEmpty()) {
-                    if (missing.size() > 0) joined.append("\n|||\n");
-                    String clean = orig.replace("\n", " ").replace("|||", "-");
-                    if (clean.length() > 220) clean = clean.substring(0, 220);
-                    joined.append(clean); missing.add(i);
+                if (c != null) {
+                    if (!c.equals(orig)) {
+                        final CharSequence outSeq = fmt != null ? fmt.format(c) : c;
+                        act.runOnUiThread(() -> tv.setText(outSeq));
+                    }
+                } else if (!orig.trim().isEmpty()) {
+                    if (missing.size() > 0) joined.append("\n[[99]]\n");
+                    String clean = orig.replace("\n", " ").replace("[[99]]", "-");
+                    if (clean.length() > 240) clean = clean.substring(0, 240);
+                    joined.append(clean);
+                    missing.add(i);
                 }
             }
             if (missing.isEmpty() || gen != transGen) return;
-            String batchOut = translateRaw(joined.toString(), 4800, 5000);
+            String batchOut = translateRaw(joined.toString(), 4500, 6000);
             if (gen != transGen) return;
-            final String[] parts = batchOut.split("\\s*\\|\\|\\|\\s*");
-            if (parts.length == missing.size()) {
+            final String[] parts = batchOut.split("\\s*\\[\\[\\s*99\\s*\\]\\]\\s*");
+            if (parts.length == missing.size() && !batchOut.equals(joined.toString())) {
                 act.runOnUiThread(() -> {
                     if (gen != transGen) return;
                     for (int k = 0; k < missing.size(); k++) {
                         int idx = missing.get(k);
                         String tr = parts[k].trim();
-                        if (!tr.isEmpty()) { transCache.put(titles.get(idx), tr); views.get(idx).setText(tr); }
+                        if (!tr.isEmpty()) {
+                            transCache.put(titles.get(idx), tr);
+                            views.get(idx).setText(fmt != null ? fmt.format(tr) : tr);
+                        }
                     }
                 });
+            } else {
+                for (int k = 0; k < missing.size(); k++) {
+                    if (gen != transGen) return;
+                    final int idx = missing.get(k);
+                    final String orig = titles.get(idx);
+                    final String tr = translateRaw(orig, 900, 5000);
+                    if (gen == transGen && !tr.equals(orig)) {
+                        final CharSequence outSeq = fmt != null ? fmt.format(tr) : tr;
+                        act.runOnUiThread(() -> views.get(idx).setText(outSeq));
+                    }
+                }
             }
         });
     }
@@ -359,10 +395,8 @@ public class NetHelper {
             Matcher idM = Pattern.compile("/(?:rss/)?(?:articles|read)/([^?&#/]+)").matcher(url);
             if (!idM.find()) return url;
             String id = idM.group(1);
-
             String b64 = decodeGNewsB64(id);
             if (b64 != null) return b64;
-
             HttpRes resp = getWithUrl("https://news.google.com/rss/articles/" + id, UA_WEB);
             if (resp.finalUrl != null && !resp.finalUrl.contains("news.google.com") && !resp.finalUrl.contains("consent.google.com")) {
                 return resp.finalUrl;
@@ -412,7 +446,7 @@ public class NetHelper {
         List<RssEntry> list = new ArrayList<>();
         String trimmedLow = xml.trim().toLowerCase();
         if (trimmedLow.startsWith("<!doctype html") || trimmedLow.startsWith("<html")) {
-            throw new Exception("Limite richieste Reddit (attendi 10s)");
+            throw new Exception("Limite richieste (attendi 10s)");
         }
         int first = xml.indexOf('<');
         if (first > 0) xml = xml.substring(first);
@@ -432,8 +466,7 @@ public class NetHelper {
                     else if (tag.endsWith("in-reply-to")) {
                         String ref = xpp.getAttributeValue(null, "ref");
                         if (ref != null && !ref.isEmpty()) cur.parentId = ref.trim();
-                    }
-                    else if ("name".equals(tag) && cur.author.isEmpty()) cur.author = safeText(xpp).replaceFirst("^/?u/", "").trim();
+                    } else if ("name".equals(tag) && cur.author.isEmpty()) cur.author = safeText(xpp).replaceFirst("^/?u/", "").trim();
                     else if ("link".equals(tag)) {
                         String href = xpp.getAttributeValue(null, "href");
                         if (href != null && !href.isEmpty()) cur.link = href.trim();

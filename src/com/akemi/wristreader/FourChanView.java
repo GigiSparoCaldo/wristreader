@@ -138,8 +138,10 @@ public class FourChanView {
 
     private void renderCatalogSlice(final String board, final List<JSONObject> all, final int offset) {
         int end = Math.min(offset + 18, all.size());
-        List<String> origTexts = new ArrayList<>();
-        List<TextView> textViews = new ArrayList<>();
+        List<String> subTexts = new ArrayList<>();
+        List<TextView> subViews = new ArrayList<>();
+        List<String> comTexts = new ArrayList<>();
+        List<TextView> comViews = new ArrayList<>();
 
         for (int i = offset; i < end; i++) {
             JSONObject th = all.get(i);
@@ -153,9 +155,9 @@ public class FourChanView {
 
             ui.addBody(card, "No." + no + "  •  💬 " + rep + "  •  🖼 " + imgs, 10.5f, "#94A3B8");
             final TextView tvSub = !sub.isEmpty() ? ui.addBody(card, sub, 14f, "#4ADE80") : null;
-            if (tvSub != null) { tvSub.setTypeface(null, Typeface.BOLD); origTexts.add(sub); textViews.add(tvSub); }
+            if (tvSub != null) { tvSub.setTypeface(null, Typeface.BOLD); subTexts.add(sub); subViews.add(tvSub); }
             final TextView tvCom = !prev.isEmpty() ? ui.addBody(card, format4chanSpans(prev, null), 12.5f, "#E2E8F0") : null;
-            if (tvCom != null) { origTexts.add(prev); textViews.add(tvCom); }
+            if (tvCom != null) { comTexts.add(prev); comViews.add(tvCom); }
 
             long tim = th.optLong("tim", 0);
             if (tim > 0) app.addSmartImage(card, "https://i.4cdn.org/" + board + "/" + tim + "s.jpg", 280, "🖼 Anteprima OP");
@@ -166,7 +168,10 @@ public class FourChanView {
             ui.contentBox.addView(card);
         }
 
-        if (app.autoTranslateIt && !origTexts.isEmpty()) net.translateTitlesAsync(origTexts, textViews, app);
+        if (app.autoTranslateIt) {
+            if (!subTexts.isEmpty()) net.translateTitlesAsync(subTexts, subViews, app);
+            if (!comTexts.isEmpty()) net.translateTitlesAsync(comTexts, comViews, app, txt -> format4chanSpans(txt, null));
+        }
 
         if (end < all.size()) {
             final Button moreBtn = ui.pill("Carica altri thread ↓ (" + (all.size() - end) + ")", "#14263C", "#1E3A5F", "#2563EB", "#7DD3FC");
@@ -255,7 +260,7 @@ public class FourChanView {
         }
 
         if (app.autoTranslateIt && !origTexts.isEmpty()) {
-            net.translateTitlesAsync(origTexts, textViews, app);
+            net.translateTitlesAsync(origTexts, textViews, app, txt -> format4chanSpans(txt, postMap));
         }
 
         if (end < posts.length()) {
@@ -299,7 +304,7 @@ public class FourChanView {
             final TextView tv = ui.addBody(box, format4chanSpans(comText, postMap), 12.5f, "#E2E8F0");
             tv.setMovementMethod(LinkMovementMethod.getInstance());
             tv.setFocusable(false);
-            if (comText.length() <= 220) {
+            if (comText.length() <= 240) {
                 origTexts.add(comText);
                 textViews.add(tv);
             } else if (app.autoTranslateIt) {
