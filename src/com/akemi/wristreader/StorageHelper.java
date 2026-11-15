@@ -17,7 +17,7 @@ public class StorageHelper {
     }
 
     public List<String> getList(String key, String defCsv) {
-        String raw = prefs.getString(key, defCsv);
+        String raw = prefs.contains(key) ? prefs.getString(key, "") : defCsv;
         List<String> list = new ArrayList<>();
         if (raw != null && !raw.trim().isEmpty()) {
             for (String s : raw.split(",")) {

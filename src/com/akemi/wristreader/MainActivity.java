@@ -100,7 +100,11 @@ public class MainActivity extends Activity {
         if (ui != null && ui.isOverlayVisible()) { ui.closeOverlay(); return; }
         if (!backStack.isEmpty()) {
             UiHelper.NavEntry prev = backStack.remove(backStack.size() - 1);
-            ui.restoreState(prev);
+            if (backStack.isEmpty()) {
+                showHome();
+            } else {
+                ui.restoreState(prev);
+            }
             return;
         }
         long now = System.currentTimeMillis();

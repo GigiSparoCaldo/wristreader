@@ -361,17 +361,18 @@ public class RedditView {
     private PageResult fetchPage(String enc, boolean isMulti, String mode, String after, boolean force, TextView loading) throws Exception {
         PageResult pr = new PageResult();
         String qAfter = (after != null && !after.isEmpty()) ? ("&after=" + URLEncoder.encode(after, "UTF-8")) : "";
-        String jsonPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode))
-                ? "/top.json?sort=top&t=" + mode + "&limit=20&raw_json=1" + qAfter
-                : "new".equals(mode) ? "/new.json?limit=20&raw_json=1" + qAfter
-                : "rising".equals(mode) ? "/rising.json?limit=20&raw_json=1" + qAfter
-                : "random".equals(mode) ? "/top.json?sort=top&t=week&limit=28&raw_json=1"
-                : "/hot.json?limit=18&raw_json=1" + qAfter;
+        boolean isTop = "day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode);
+        String jsonPath = isTop
+                ? "/top.json?t=" + mode + "&limit=25&raw_json=1" + qAfter
+                : "new".equals(mode) ? "/new.json?limit=25&raw_json=1" + qAfter
+                : "rising".equals(mode) ? "/rising.json?limit=25&raw_json=1" + qAfter
+                : "random".equals(mode) ? "/top.json?t=month&limit=30&raw_json=1"
+                : "/hot.json?limit=22&raw_json=1" + qAfter;
 
         String[][] jsonEndpoints = {
-            {"https://www.reddit.com/r/" + enc + jsonPath, NetHelper.UA_WEB},
+            {"https://api.reddit.com/r/" + enc + jsonPath.replace(".json", ""), NetHelper.UA_FEED},
             {"https://old.reddit.com/r/" + enc + jsonPath, NetHelper.UA_REDDIT},
-            {"https://api.reddit.com/r/" + enc + jsonPath.replace(".json", ""), NetHelper.UA_FEED}
+            {"https://www.reddit.com/r/" + enc + jsonPath, NetHelper.UA_WEB}
         };
 
         for (String[] ep : jsonEndpoints) {
@@ -391,11 +392,11 @@ public class RedditView {
             } catch (Exception ignored) {}
         }
 
-        String rssPath = ("day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode))
-                ? "/top/.rss?sort=top&t=" + mode + "&limit=25"
-                : "new".equals(mode) ? "/new/.rss?limit=25"
-                : "rising".equals(mode) ? "/rising/.rss?limit=25"
-                : "random".equals(mode) ? "/top/.rss?sort=top&t=week&limit=25" : "/.rss?limit=25";
+        String rssPath = isTop
+                ? "/top.rss?t=" + mode + "&limit=25"
+                : "new".equals(mode) ? "/new.rss?limit=25"
+                : "rising".equals(mode) ? "/rising.rss?limit=25"
+                : "random".equals(mode) ? "/top.rss?t=month&limit=25" : "/hot.rss?limit=25";
 
         for (String[] rep : new String[][]{
                 {"https://www.reddit.com/r/" + enc + rssPath, NetHelper.UA_FEED},
