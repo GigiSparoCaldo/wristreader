@@ -386,50 +386,95 @@ public class MainActivity extends Activity {
         String curUser = store.getRedditUser();
         ui.addSub(curUser.isEmpty() ? "Stato: Non connesso" : ("Connesso come u/" + curUser));
 
-        ui.addBody(ui.contentBox, "Incolla il valore del cookie 'reddit_session' (preso dal browser su PC/telefono o inviato via ADB).", 12f, "#CBD5E1");
+        final EditText userInput = new EditText(this);
+        userInput.setHint("Username Reddit");
+        userInput.setHintTextColor(Color.parseColor("#64748B"));
+        userInput.setTextColor(Color.WHITE);
+        userInput.setTextSize(ui.sp(12.5f));
+        userInput.setText(curUser);
+        userInput.setBackground(ui.roundBox("#141923", "#2A3447", 18));
+        userInput.setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10));
+        userInput.setSingleLine(true);
+        ui.contentBox.addView(userInput);
 
-        final EditText ckInput = new EditText(this);
-        ckInput.setHint("reddit_session=...");
-        ckInput.setHintTextColor(Color.parseColor("#64748B"));
-        ckInput.setTextColor(Color.WHITE);
-        ckInput.setTextSize(ui.sp(12f));
-        ckInput.setText(store.getRedditCookie());
-        ckInput.setBackground(ui.roundBox("#141923", "#2A3447", 18));
-        ckInput.setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10));
-        ckInput.setSingleLine(true);
-        ui.contentBox.addView(ckInput);
+        final EditText passInput = new EditText(this);
+        passInput.setHint("Password");
+        passInput.setHintTextColor(Color.parseColor("#64748B"));
+        passInput.setTextColor(Color.WHITE);
+        passInput.setTextSize(ui.sp(12.5f));
+        passInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        passInput.setBackground(ui.roundBox("#141923", "#2A3447", 18));
+        passInput.setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10));
+        passInput.setSingleLine(true);
+        LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pLp.topMargin = ui.dp(6);
+        passInput.setLayoutParams(pLp);
+        ui.contentBox.addView(passInput);
+
+        final EditText otpInput = new EditText(this);
+        otpInput.setHint("Codice 2FA (solo se attivo)");
+        otpInput.setHintTextColor(Color.parseColor("#64748B"));
+        otpInput.setTextColor(Color.WHITE);
+        otpInput.setTextSize(ui.sp(12f));
+        otpInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        otpInput.setBackground(ui.roundBox("#141923", "#2A3447", 18));
+        otpInput.setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8));
+        otpInput.setSingleLine(true);
+        LinearLayout.LayoutParams oLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        oLp.topMargin = ui.dp(6);
+        otpInput.setLayoutParams(oLp);
+        ui.contentBox.addView(otpInput);
 
         final TextView statusTv = ui.addBody(ui.contentBox, "", 12f, "#38BDF8");
 
-        ui.addPill(ui.contentBox, "✓ Salva e Verifica Account", "#15803D", "#166534", null, "#FFFFFF", v -> {
-            String val = ckInput.getText().toString().trim();
-            store.setRedditCookie(val);
-            net.redditCookie = store.getRedditCookie();
-            if (net.redditCookie.isEmpty()) {
-                store.setRedditUser("");
-                statusTv.setText("Cookie rimosso.");
+        ui.addPill(ui.contentBox, "🚀 Accedi ora", "#EA580C", "#C2410C", null, "#FFFFFF", v -> {
+            final String u = userInput.getText().toString().trim();
+            final String p = passInput.getText().toString();
+            final String otp = otpInput.getText().toString().trim();
+            if (u.isEmpty() || p.isEmpty()) {
+                statusTv.setText("Inserisci username e password.");
                 return;
             }
-            statusTv.setText("Verifica sessione in corso...");
+            statusTv.setText("Accesso a Reddit in corso...");
             pool.execute(() -> {
                 try {
+                    String ck = net.loginReddit(u, p, otp);
+                    store.setRedditCookie(ck);
                     String me = net.getCached("https://www.reddit.com/api/me.json", NetHelper.UA_WEB, true);
                     JSONObject data = new JSONObject(me).optJSONObject("data");
-                    String name = data != null ? data.optString("name", "") : "";
-                    if (name.isEmpty()) throw new Exception("Cookie scaduto o non valido");
-                    store.setRedditUser(name);
+                    String realName = (data != null && !data.optString("name", "").isEmpty()) ? data.optString("name") : u;
+                    store.setRedditUser(realName);
+
+                    int importedCount = 0;
+                    try {
+                        String raw = net.getCached("https://www.reddit.com/subreddits/mine/subscriber.json?limit=100", NetHelper.UA_WEB, true);
+                        JSONArray ch = new JSONObject(raw).getJSONObject("data").getJSONArray("children");
+                        List<String> imported = new ArrayList<>();
+                        for (int i = 0; i < ch.length(); i++) {
+                            String dName = ch.getJSONObject(i).getJSONObject("data").optString("display_name", "");
+                            if (!dName.isEmpty()) imported.add(dName);
+                        }
+                        if (!imported.isEmpty()) {
+                            store.setFollowedSubs(imported);
+                            importedCount = imported.size();
+                        }
+                    } catch (Exception ignored) {}
+
+                    final int fCount = importedCount;
                     runOnUiThread(() -> {
-                        statusTv.setText("✓ Connesso come u/" + name + "!");
+                        Toast.makeText(this, "Connesso come u/" + realName + (fCount > 0 ? " (" + fCount + " sub)" : ""), Toast.LENGTH_LONG).show();
                         showRedditLogin();
                     });
                 } catch (Throwable e) {
-                    runOnUiThread(() -> statusTv.setText("Errore verifica: " + e.getMessage()));
+                    runOnUiThread(() -> statusTv.setText("Errore login: " + e.getMessage()));
                 }
             });
         });
 
         if (!store.getRedditCookie().isEmpty()) {
-            ui.addPill(ui.contentBox, "🔄 Importa Subreddit Seguiti", "#0284C7", "#0369A1", null, "#FFFFFF", v -> {
+            ui.addPill(ui.contentBox, "🔄 Sincronizza Subreddit Seguiti", "#0284C7", "#0369A1", null, "#FFFFFF", v -> {
                 statusTv.setText("Scaricamento lista subreddit...");
                 pool.execute(() -> {
                     try {
@@ -445,18 +490,36 @@ public class MainActivity extends Activity {
                         final int count = imported.size();
                         runOnUiThread(() -> statusTv.setText("✓ Importati " + count + " subreddit nella Home!"));
                     } catch (Throwable e) {
-                        runOnUiThread(() -> statusTv.setText("Errore importazione: " + e.getMessage()));
+                        runOnUiThread(() -> statusTv.setText("Errore sync: " + e.getMessage()));
                     }
                 });
             });
 
-            ui.addPill(ui.contentBox, "Esci / Cancella Cookie", "#291711", "#431F12", "#9A3412", "#FCA5A5", v -> {
+            ui.addPill(ui.contentBox, "Esci / Disconnetti", "#291711", "#431F12", "#9A3412", "#FCA5A5", v -> {
                 store.setRedditCookie("");
                 store.setRedditUser("");
                 net.redditCookie = "";
                 showRedditLogin();
             });
         }
+
+        ui.addSection("OPPURE COOKIE MANUALE (LOGIN GOOGLE)");
+        final EditText ckInput = new EditText(this);
+        ckInput.setHint("reddit_session=...");
+        ckInput.setHintTextColor(Color.parseColor("#64748B"));
+        ckInput.setTextColor(Color.WHITE);
+        ckInput.setTextSize(ui.sp(11.5f));
+        ckInput.setText(store.getRedditCookie());
+        ckInput.setBackground(ui.roundBox("#141923", "#2A3447", 18));
+        ckInput.setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8));
+        ckInput.setSingleLine(true);
+        ui.contentBox.addView(ckInput);
+
+        ui.addPill(ui.contentBox, "Salva Cookie Manuale", "#141923", "#1E2634", "#334155", "#CBD5E1", v -> {
+            store.setRedditCookie(ckInput.getText().toString().trim());
+            net.redditCookie = store.getRedditCookie();
+            statusTv.setText("Cookie aggiornato.");
+        });
     }
 
     private void showBookmarks() {

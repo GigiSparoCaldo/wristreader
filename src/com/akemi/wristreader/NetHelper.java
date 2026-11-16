@@ -234,6 +234,83 @@ public class NetHelper {
         throw new Exception("Troppi redirect");
     }
 
+    public String loginReddit(String user, String pass, String otp) throws Exception {
+        HttpURLConnection c = openConnection("https://old.reddit.com/api/login", UA_WEB, null);
+        c.setRequestMethod("POST");
+        c.setDoOutput(true);
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(9000);
+        c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+        c.setRequestProperty("Accept", "application/json, text/javascript, */*; q=0.01");
+        c.setRequestProperty("Origin", "https://old.reddit.com");
+        c.setRequestProperty("Referer", "https://old.reddit.com/login");
+
+        StringBuilder body = new StringBuilder();
+        body.append("op=login-main&user=").append(URLEncoder.encode(user, "UTF-8"));
+        body.append("&passwd=").append(URLEncoder.encode(pass, "UTF-8"));
+        body.append("&api_type=json");
+        if (otp != null && !otp.trim().isEmpty()) {
+            body.append("&otp=").append(URLEncoder.encode(otp.trim(), "UTF-8"));
+        }
+
+        try (OutputStream os = c.getOutputStream()) {
+            os.write(body.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        StringBuilder cookieJar = new StringBuilder();
+        for (int i = 0; ; i++) {
+            String k = c.getHeaderFieldKey(i);
+            String v = c.getHeaderField(i);
+            if (k == null && v == null) break;
+            if ("Set-Cookie".equalsIgnoreCase(k) && v != null) {
+                String pair = v.split(";")[0].trim();
+                if (!pair.isEmpty()) {
+                    if (cookieJar.length() > 0) cookieJar.append("; ");
+                    cookieJar.append(pair);
+                }
+            }
+        }
+
+        String respStr;
+        try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            respStr = new String(out.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            c.disconnect();
+        }
+
+        JSONObject root = new JSONObject(respStr).optJSONObject("json");
+        if (root != null) {
+            JSONArray errs = root.optJSONArray("errors");
+            if (errs != null && errs.length() > 0) {
+                JSONArray firstErr = errs.optJSONArray(0);
+                String code = firstErr != null ? firstErr.optString(0, "") : "";
+                String msg = firstErr != null ? firstErr.optString(1, "Credenziali non valide") : "Errore login";
+                if (code.contains("OTP") || code.contains("TWO_FACTOR") || msg.toLowerCase().contains("two-factor")) {
+                    throw new Exception("Inserisci il codice 2FA a 6 cifre nel campo dedicato");
+                }
+                throw new Exception(msg + (code.isEmpty() ? "" : " (" + code + ")"));
+            }
+            JSONObject data = root.optJSONObject("data");
+            if (data != null) {
+                String ck = data.optString("cookie", "").trim();
+                if (!ck.isEmpty() && !cookieJar.toString().contains("reddit_session=")) {
+                    if (cookieJar.length() > 0) cookieJar.append("; ");
+                    cookieJar.append("reddit_session=").append(ck);
+                }
+            }
+        }
+
+        String finalCookie = cookieJar.toString();
+        if (!finalCookie.contains("reddit_session=")) {
+            throw new Exception("Sessione non ricevuta (verifica password o usa cookie manuale se usi login Google)");
+        }
+        this.redditCookie = finalCookie;
+        return finalCookie;
+    }
+
     public String post(String urlStr, String formBody, String ua) throws Exception { return post(urlStr, formBody, ua, 6500); }
 
     public String post(String urlStr, String formBody, String ua, int timeoutMs) throws Exception {
