@@ -45,6 +45,29 @@ public class StorageHelper {
         prefs.edit().putString(key, sb.toString()).apply();
     }
 
+    public String getRedditCookie() { return prefs.getString("reddit_cookie", "").trim(); }
+
+    public void setRedditCookie(String raw) {
+        String c = raw == null ? "" : raw.trim();
+        if (!c.isEmpty() && !c.contains("=")) c = "reddit_session=" + c;
+        prefs.edit().putString("reddit_cookie", c).apply();
+    }
+
+    public String getRedditUser() { return prefs.getString("reddit_user", "").trim(); }
+
+    public void setRedditUser(String u) { prefs.edit().putString("reddit_user", u == null ? "" : u.trim()).apply(); }
+
+    public void setFollowedSubs(List<String> subs) {
+        Set<String> clean = new LinkedHashSet<>();
+        for (String sub : subs) {
+            String t = sub.trim().replaceAll("^/+|/+$", "").replaceFirst("^r/", "");
+            if (!t.isEmpty()) clean.add(t);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String item : clean) { if (sb.length() > 0) sb.append(","); sb.append(item); }
+        prefs.edit().putString("followed_subs", sb.toString()).apply();
+    }
+
     public List<String> getFollowedSubs() { return getList("followed_subs", "italy,WearOS,technology,androiddev"); }
     public boolean isSubFollowed(String s) { return containsItem("followed_subs", "italy,WearOS,technology,androiddev", s); }
     public void toggleSub(String s) { toggleItem("followed_subs", "italy,WearOS,technology,androiddev", s); }

@@ -60,6 +60,48 @@ public class RedditView {
         loadFeedInternal(sb.toString(), true, perSub, mode, force);
     }
 
+    public void loadAccountHome(final String sort, final boolean force) {
+        ui.clear();
+        ui.addNavBar(app::onBackPressed, () -> app.cycleFontInPlace(), () -> loadAccountHome(sort, true));
+        String user = app.store.getRedditUser();
+        ui.addTitle(user.isEmpty() ? "Feed Personale" : ("u/" + user), "#FB923C");
+        ui.addSub("Home Account • " + sort.toUpperCase());
+
+        LinearLayout row = new LinearLayout(app);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        String[][] tabs = {{"⭐Best", "best"}, {"🔥Hot", "hot"}, {"🆕New", "new"}, {"🚀Rising", "rising"}};
+        for (int i = 0; i < tabs.length; i++) {
+            final String sc = tabs[i][1];
+            boolean act = sc.equals(sort);
+            Button sb = ui.chip(tabs[i][0], act ? "#EA580C" : "#141923", act ? "#C2410C" : "#1F2736",
+                    act ? null : "#2A3447", act ? "#FFFFFF" : "#94A3B8");
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) clp.leftMargin = ui.dp(3);
+            sb.setLayoutParams(clp);
+            sb.setOnClickListener(v -> loadAccountHome(sc, false));
+            row.addView(sb);
+        }
+        ui.contentBox.addView(row);
+
+        final TextView loading = ui.addBody(ui.contentBox, "Caricamento feed personale...", 13f, "#E2E8F0");
+        pool.execute(() -> {
+            try {
+                PageResult res = fetchPage("", false, "account_" + sort, "", force, loading);
+                app.runOnUiThread(() -> {
+                    ui.contentBox.removeView(loading);
+                    if (res.posts.isEmpty()) {
+                        ui.addBody(ui.contentBox, "Nessun post trovato. Verifica che il cookie sia valido.", 13f, "#E2E8F0");
+                        return;
+                    }
+                    appendPostsAndMore("", false, "account_" + sort, res);
+                });
+            } catch (Throwable e) {
+                app.runOnUiThread(() -> loading.setText("Errore account: " + e.getMessage()));
+            }
+        });
+    }
+
     public void loadFeed(final String subOrMulti, final boolean isMulti, final String mode, final boolean force) {
         loadFeedInternal(subOrMulti, isMulti, isMulti, mode, force);
     }
@@ -361,6 +403,22 @@ public class RedditView {
     private PageResult fetchPage(String enc, boolean isMulti, String mode, String after, boolean force, TextView loading) throws Exception {
         PageResult pr = new PageResult();
         String qAfter = (after != null && !after.isEmpty()) ? ("&after=" + URLEncoder.encode(after, "UTF-8")) : "";
+        if (mode != null && mode.startsWith("account_")) {
+            String subSort = mode.substring(8);
+            String u = "https://www.reddit.com/" + subSort + ".json?limit=22&raw_json=1" + qAfter;
+            String rawJson = net.getCached(u, NetHelper.UA_WEB, force,
+                    loading != null ? (msg -> app.runOnUiThread(() -> loading.setText(msg))) : null).trim();
+            if (rawJson.startsWith("{")) {
+                JSONObject data = new JSONObject(rawJson).getJSONObject("data");
+                pr.after = data.optString("after", "");
+                JSONArray children = data.getJSONArray("children");
+                for (int i = 0; i < children.length(); i++) {
+                    JSONObject p = children.optJSONObject(i).optJSONObject("data");
+                    if (p != null) pr.posts.add(p);
+                }
+            }
+            return pr;
+        }
         boolean isTop = "day".equals(mode) || "week".equals(mode) || "month".equals(mode) || "year".equals(mode) || "all".equals(mode);
         String jsonPath = isTop
                 ? "/top.json?t=" + mode + "&limit=25&raw_json=1" + qAfter

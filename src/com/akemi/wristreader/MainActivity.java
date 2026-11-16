@@ -60,6 +60,7 @@ public class MainActivity extends Activity {
 
         ui = new UiHelper(this, scale);
         net = new NetHelper();
+        net.redditCookie = store.getRedditCookie();
         reddit = new RedditView(this, ui, net, pool);
         fourChan = new FourChanView(this, ui, net, pool);
         showHome();
@@ -279,6 +280,11 @@ public class MainActivity extends Activity {
         ui.contentBox.addView(searchRow);
 
         ui.addSection("IL MIO FEED REDDIT");
+        if (!store.getRedditCookie().isEmpty()) {
+            String uLbl = store.getRedditUser().isEmpty() ? "🏠 Home Account (Best)" : ("🏠 Home u/" + store.getRedditUser());
+            ui.addPill(ui.contentBox, uLbl, "#1D4ED8", "#1E40AF", "#60A5FA", "#FFFFFF",
+                    v -> navigateTo(() -> reddit.loadAccountHome("best", false)));
+        }
         ui.addPill(ui.contentBox, "🎲 Casuale (Miei Seguiti)", "#EA580C", "#C2410C", null, "#FFFFFF",
                 v -> navigateTo(() -> reddit.loadFollowed("random", false)));
 
@@ -323,6 +329,9 @@ public class MainActivity extends Activity {
         }
 
         ui.addSection("SALVATI & IMPOSTAZIONI");
+        String accBtnLbl = store.getRedditUser().isEmpty() ? "🔑 Login Reddit (Cookie)" : ("🔑 Reddit: u/" + store.getRedditUser());
+        ui.addPill(ui.contentBox, accBtnLbl, "#172033", "#1E293B", "#EA580C", "#FDBA74",
+                v -> navigateTo(this::showRedditLogin));
         int bmCount = store.getBookmarks().length();
         ui.addPill(ui.contentBox, "⭐ Salvati Offline (" + bmCount + ")", "#1F1A10", "#2E2616", "#D97706", "#FBBF24",
                 v -> navigateTo(this::showBookmarks));
@@ -368,6 +377,86 @@ public class MainActivity extends Activity {
                 v -> navigateTo(() -> loadRss("https://www.ansa.it/sito/notizie/topnews/topnews_rss.xml", "ANSA Top News", false)));
         ui.addPill(ui.contentBox, "Il Post", "#141923", "#1E2634", "#263042", "#F8FAFC",
                 v -> navigateTo(() -> loadRss("https://www.ilpost.it/feed/", "Il Post", false)));
+    }
+
+    private void showRedditLogin() {
+        ui.clear();
+        ui.addNavBar(this::onBackPressed, this::cycleFontInPlace, null);
+        ui.addTitle("🔑 Login Reddit", "#FB923C");
+        String curUser = store.getRedditUser();
+        ui.addSub(curUser.isEmpty() ? "Stato: Non connesso" : ("Connesso come u/" + curUser));
+
+        ui.addBody(ui.contentBox, "Incolla il valore del cookie 'reddit_session' (preso dal browser su PC/telefono o inviato via ADB).", 12f, "#CBD5E1");
+
+        final EditText ckInput = new EditText(this);
+        ckInput.setHint("reddit_session=...");
+        ckInput.setHintTextColor(Color.parseColor("#64748B"));
+        ckInput.setTextColor(Color.WHITE);
+        ckInput.setTextSize(ui.sp(12f));
+        ckInput.setText(store.getRedditCookie());
+        ckInput.setBackground(ui.roundBox("#141923", "#2A3447", 18));
+        ckInput.setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10));
+        ckInput.setSingleLine(true);
+        ui.contentBox.addView(ckInput);
+
+        final TextView statusTv = ui.addBody(ui.contentBox, "", 12f, "#38BDF8");
+
+        ui.addPill(ui.contentBox, "✓ Salva e Verifica Account", "#15803D", "#166534", null, "#FFFFFF", v -> {
+            String val = ckInput.getText().toString().trim();
+            store.setRedditCookie(val);
+            net.redditCookie = store.getRedditCookie();
+            if (net.redditCookie.isEmpty()) {
+                store.setRedditUser("");
+                statusTv.setText("Cookie rimosso.");
+                return;
+            }
+            statusTv.setText("Verifica sessione in corso...");
+            pool.execute(() -> {
+                try {
+                    String me = net.getCached("https://www.reddit.com/api/me.json", NetHelper.UA_WEB, true);
+                    JSONObject data = new JSONObject(me).optJSONObject("data");
+                    String name = data != null ? data.optString("name", "") : "";
+                    if (name.isEmpty()) throw new Exception("Cookie scaduto o non valido");
+                    store.setRedditUser(name);
+                    runOnUiThread(() -> {
+                        statusTv.setText("✓ Connesso come u/" + name + "!");
+                        showRedditLogin();
+                    });
+                } catch (Throwable e) {
+                    runOnUiThread(() -> statusTv.setText("Errore verifica: " + e.getMessage()));
+                }
+            });
+        });
+
+        if (!store.getRedditCookie().isEmpty()) {
+            ui.addPill(ui.contentBox, "🔄 Importa Subreddit Seguiti", "#0284C7", "#0369A1", null, "#FFFFFF", v -> {
+                statusTv.setText("Scaricamento lista subreddit...");
+                pool.execute(() -> {
+                    try {
+                        String raw = net.getCached("https://www.reddit.com/subreddits/mine/subscriber.json?limit=100", NetHelper.UA_WEB, true);
+                        JSONArray ch = new JSONObject(raw).getJSONObject("data").getJSONArray("children");
+                        List<String> imported = new ArrayList<>();
+                        for (int i = 0; i < ch.length(); i++) {
+                            String dName = ch.getJSONObject(i).getJSONObject("data").optString("display_name", "");
+                            if (!dName.isEmpty()) imported.add(dName);
+                        }
+                        if (imported.isEmpty()) throw new Exception("Nessun subreddit trovato");
+                        store.setFollowedSubs(imported);
+                        final int count = imported.size();
+                        runOnUiThread(() -> statusTv.setText("✓ Importati " + count + " subreddit nella Home!"));
+                    } catch (Throwable e) {
+                        runOnUiThread(() -> statusTv.setText("Errore importazione: " + e.getMessage()));
+                    }
+                });
+            });
+
+            ui.addPill(ui.contentBox, "Esci / Cancella Cookie", "#291711", "#431F12", "#9A3412", "#FCA5A5", v -> {
+                store.setRedditCookie("");
+                store.setRedditUser("");
+                net.redditCookie = "";
+                showRedditLogin();
+            });
+        }
     }
 
     private void showBookmarks() {

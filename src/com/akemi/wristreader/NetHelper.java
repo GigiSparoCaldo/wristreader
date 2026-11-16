@@ -121,6 +121,7 @@ public class NetHelper {
     private final ExecutorService dnsPool = Executors.newCachedThreadPool();
     public final ExecutorService transPool = Executors.newFixedThreadPool(2);
     public volatile int transGen = 0;
+    public volatile String redditCookie = "";
 
     public int nextTransGen() { return ++transGen; }
     private boolean isIpLiteral(String s) { return s != null && s.matches("^\\d{1,3}(\\.\\d{1,3}){3}$"); }
@@ -212,6 +213,7 @@ public class NetHelper {
             if (cur.contains(".json")) c.setRequestProperty("Accept", "application/json");
             else c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
             if (cur.contains("google.com")) c.setRequestProperty("Cookie", "CONSENT=YES+cb.20260101-00-p0.it+FX+111");
+            else if (cur.contains("reddit.com") && redditCookie != null && !redditCookie.isEmpty()) c.setRequestProperty("Cookie", redditCookie);
             int code = c.getResponseCode();
             if (code >= 300 && code < 400) {
                 String loc = c.getHeaderField("Location"); c.disconnect();
